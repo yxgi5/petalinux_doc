@@ -1,5 +1,22 @@
 # 一般流程
 
+## 进入容器
+
+这里可以是`docker`, `podman`运行的容器, 或者是`distrobox`调用的`podman`容器, 为什么及怎么创建的不在这里记录了.
+
+```bash
+docker exec -it ubuntu_container /bin/bash
+
+distrobox enter ubuntu1804 -- bash
+distrobox enter ubuntu1804 -- bash --noprofile
+```
+
+切换成普通用户然后切换到目标目录
+
+`podman`试下来很容易崩.
+
+
+
 ## 环境变量设置
 
 ```bash
@@ -26,12 +43,6 @@ petalinux是工作目录
 ```bash
 cd petalinux/
 petalinux-config --get-hw-description ../hardware/
-```
-
-如果不想修改`project-spec/configs/config`, 也可以跳过`menuconfig`
-
-```bash
-petalinux-config --silentconfig --get-hw-description=../hardware/
 ```
 
 更新 xsa 文件后，需要这样
@@ -86,23 +97,76 @@ petalinux-config -c kernel
 petalinux-config -c rootfs
 ```
 
+## 直接产生device-tree
+
+这样可以基于自动生成的 device-tree 去编辑 `project-spec/meta-user/recipes-bsp/device-tree`
+
+```
+petalinux-config -c device-tree
+
+or
+
+petalinux-build -c device-tree -x do_configure
+```
+
+输出位于`components/plnx_workspace/device-tree/device-tree`
+
+
+
 ## 开始构建
+
 ```bash
 petalinux-build
+
+==
+petalinux-build -c petalinux-image-minimal -x do_compile
 ```
+单独编译某个软件
+
+```
+petalinux-build -c device-tree -x cleansstate
+petalinux-build -c device-tree -x do_compile
+```
+
+
+
+并行处理数量在`project-spec/configs/config`里配置
+
+```bash
+CONFIG_YOCTO_BB_NUMBER_THREADS=""
+CONFIG_YOCTO_PARALLEL_MAKE=""
+```
+
+也可以在`project-spec/meta-user/conf/petalinuxbsp.conf`强行设置并行处理数量
+
+```bash
+BB_NUMBER_THREADS = "2"
+PARALLEL_MAKE = "-j2"
+```
+
+
+
 清理
+
 ```bash
 petalinux-build -x clean
 petalinux-build -x cleansstate
 petalinux-build -x mrproper             # 最彻底
+
+petalinux-build -x cleansstate  == bitbake petalinux-image-minimal -c cleansstate
 ```
 
+
+
+
+
 ## 构建完毕后产生目标文件
+
 ```bash
 petalinux-package --boot --u-boot --fpga --force
 ```
 
-默认就是sd卡启动ramfs
+默认就是`sd`卡启动`ramfs`
 
 `petalinux/images/linux`目录下的这三个文件放到vfat格式的sd卡就可以。记得启动拨码给对。
 
@@ -259,6 +323,16 @@ i2c-0   i2c             i2c-gpio-0                              I2C adapter
 i2c-1   i2c             i2c-gpio-1                              I2C adapter
 i2c-2   i2c             i2c-gpio-2                              I2C adapter
 
+oot@petalinux:~# ls -l /sys/class/i2c-adapter/                                                                                 
+lrwxrwxrwx    1 root     root             0 May  8 09:13 i2c-0 -> ../../devices/platform/i2c-gpio-0/i2c-0
+lrwxrwxrwx    1 root     root             0 May  8 09:13 i2c-1 -> ../../devices/platform/i2c-gpio-1/i2c-1
+lrwxrwxrwx    1 root     root             0 May  8 09:13 i2c-2 -> ../../devices/platform/i2c-gpio-2/i2c-2
+
+root@petalinux:~# dmesg | grep i2c-gpio
+[    4.672369] i2c-gpio i2c-gpio-0: using lines 470 (SDA) and 471 (SCL)
+[    4.682554] i2c-gpio i2c-gpio-1: using lines 472 (SDA) and 473 (SCL)
+[    4.690846] i2c-gpio i2c-gpio-2: using lines 474 (SDA) and 475 (SCL)
+
 ```
 
 下面修改无效
@@ -325,7 +399,7 @@ root@petalinux:~# dmesg | grep i2c
 
 看起来是缺少中断号，那么vivado把中断连上
 
-测试ok，能检测到
+测试`ok`，能检测到
 
 
 
@@ -1029,6 +1103,12 @@ root@petalinux:~# i2cdetect -y -a 2
 
 <https://xilinx.github.io/vck190-base-trd/2020.2/html/build-plnx.html>
 
+非drm框架的
+
+<https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/767197238/HDMI+FrameBuffer+Example+Design+2020.1>
+
+<https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/18842526/HDMI+FrameBuffer+Example+Design+2017.3>
+
 
 
 实际上, 根据后面展开的`device-tree`有关文件, `base_trd`更有参考价值
@@ -1111,7 +1191,7 @@ INFO: New project successfully created in /home/andy/workdir/trd/rdf0421-zcu102-
 
 $ cd bsp/
 
-$ petalinux-config --silentconfig	# 这里错误无法解决
+$ petalinux-config --silentconfig	# 这里错误无法解决 [后来找到问题所在, 跳转到问题解决方法(`petalinux2020.1`出问题的真相)]
 INFO: sourcing build tools
 [INFO] generating Kconfig for project
 [INFO] silentconfig project
@@ -1521,6 +1601,12 @@ $ petalinux-devtool modify linux-xlnx
 ```bash
 petalinux/components/yocto/workspace/sources/linux-xlnx/drivers/clk/idt/clk-idt8t49n24x.c
 ```
+也可以在
+
+<https://github.com/Xilinx/linux-xlnx/tree/xlnx_rebase_v5.15_LTS >找对应的文件查看
+
+
+
 没有任何关于 GPIO 或 reset 的调用，例如没有 gpiod_get() / devm_gpiod_get_optional()、没有 gpiod_set_value() / gpiod_set_value_cansleep()、也没有 gpio_request() / gpio_direction_output() 等。
 
 也没有使用通用的 reset API（reset_control_get() / reset_control_assert() 等）。
@@ -1884,6 +1970,16 @@ root@petalinux:/sys/kernel/debug/idt24x# echo 1 > action
 
 # 尝试借鉴base_trd和vcu_trd
 
+`zcu102`的`base_trd`比较老, 没有2022.2版本的, 目前只能通过虚拟机来编译.  结构上最接近目标板设计, 除了vcu.
+
+![img](images/base_trd_block_diagram.jpg)
+
+`zcu106`的`vcu_trd`有2022.2版本的, 至少需要在开发板先跑起来再简化.
+
+![img](images/vcu_trd_block_diagram.png)
+
+
+
 从`rdf0421-zcu102-base-trd-2020-1/petalinux/bsp`复制和添加文件和文件夹, 主要是
 
 `project-spec/configs/rootfs_config`
@@ -1955,6 +2051,8 @@ INFO: sourcing build tools
 
 就导入成功了
 
+接下来就可以搜索借鉴配置和dt描述了, 主要就是在`project-spec` 和 `components` 目录. 例如
+
 `grep -R "packagegroup"`
 
 ```bash
@@ -1994,9 +2092,17 @@ xxx:append
 xxx:prepend
 ```
 
+这样才能迁移成功不报错
+
 
 
 ## `modetest`检测不到设备
+
+| git commit | xsa md5 | comment |
+| ---------- | ------- | ------- |
+| c0456202   |         |pll用aresetn复位|
+
+
 
 其实还是没有显示, `startx`也没有成功
 
@@ -2079,7 +2185,9 @@ root@petalinux:~# ls /sys/bus/platform/devices | grep v
 firmware:zynqmp-firmware:nvmem_firmware
 ```
 
+接下来咋办? 
 
+再试试加一个 v_mix, `trd`工程里都是这样. 原因如下
 
 在`Xilinx DRM`架构里
 
@@ -2091,9 +2199,7 @@ vid_phy 		= PHY
 
 
 
-接下来咋办? 
 
-再试试加一个 v_mix, 不行再迁移简化`trd`工程
 
 ***
 
@@ -2801,6 +2907,8 @@ root@petalinux:~# devmem 0x800A0000
 
 ## 添加`vtc`
 
+[跳转到问题解决方法](#section1)
+
 ### 路径1
 
 参考`base_trd`, 也取消`axis_switch`
@@ -3074,21 +3182,1876 @@ id      size    pitch
 
 ```
 
+#### 确定会报错
 
+```
+root@petalinux:~# modetest -M xlnx -s 41@39:3840x2160-60@BG24
+setting mode 3840x2160-60.00Hz on connectors 41, crtc 39
 
-# 迁移`vcu_trd`或`base_trd`到目标板子或开发板
-
-先不考虑从自定义工程出发修改, 而是从`trd`进行简化
-
-`zcu102`的`base_trd`比较老, 没有2022.2版本的, 目前只能通过虚拟机来编译.  结构上最接近目标板设计, 除了vcu.
-
-![img](file:///home/andy/workdir/trd/base_trd_block_diagram.jpg)
-
-`zcu106`的`vcu_trd`有2022.2版本的, 至少需要在开发板先跑起来再简化.
-
-![img](file:///home/andy/workdir/trd/vcu_trd_block_diagram.png)
+[  345.471850] [drm:drm_crtc_commit_wait] *ERROR* flip_done timed out
+[  345.478050] [drm:drm_atomic_helper_wait_for_dependencies] *ERROR* [CRTC:39:crtc-0] commit wait timed out
 
 
 
 
+[  355.711849] [drm:drm_crtc_commit_wait] *ERROR* flip_done timed out
+[  355.718044] [drm:drm_atomic_helper_wait_for_dependencies] *ERROR* [CONNECTOR:41:HDMI-A-1] commit wait timed out
+[  365.951860] [drm:drm_crtc_commit_wait] *ERROR* flip_done timed out
+[  365.958045] [drm:drm_atomic_helper_wait_for_dependencies] *ERROR* [PLANE:38:plane-4] commit wait timed out
+[  366.067853] ------------[ cut here ]------------
+[  366.072464] [CRTC:39:crtc-0] vblank wait timed out
+[  366.077285] WARNING: CPU: 3 PID: 798 at drivers/gpu/drm/drm_atomic_helper.c:1514 drm_atomic_helper_wait_for_vblanks.part.0+0x278/0x2a0
+[  366.089365] Modules linked in: zocl(O) mali(O) xilinx_hdmi_tx(O) dp159(O) xilinx_vphy(O) uio_pdrv_genirq dmaproxy(O)
+[  366.099896] CPU: 3 PID: 798 Comm: modetest Tainted: G        W  O      5.15.36-xilinx-v2022.2 #1
+[  366.108669] Hardware name: xlnx,zynqmp (DT)
+[  366.112836] pstate: 60000005 (nZCv daif -PAN -UAO -TCO -DIT -SSBS BTYPE=--)
+[  366.119788] pc : drm_atomic_helper_wait_for_vblanks.part.0+0x278/0x2a0
+[  366.126307] lr : drm_atomic_helper_wait_for_vblanks.part.0+0x278/0x2a0
+[  366.132826] sp : ffff8000096839f0
+[  366.136124] x29: ffff8000096839f0 x28: 000000000000000a x27: 0000000000000000
+[  366.143250] x26: 0000000000000001 x25: 0000000000000038 x24: ffff000821d04800
+[  366.150377] x23: 0000000000000001 x22: 0000000000000000 x21: ffff0008224dcf00
+[  366.157503] x20: ffff00081f14c900 x19: 0000000000000000 x18: ffffffffffffffff
+[  366.164629] x17: 0000000000000000 x16: 0000000000000000 x15: ffff800089683717
+[  366.171755] x14: 0000000000000000 x13: ffff8000093c6128 x12: 00000000000006f6
+[  366.178882] x11: 0000000000000252 x10: ffff8000093c6128 x9 : ffff8000093c6128
+[  366.186008] x8 : 00000000fffff7ff x7 : ffff8000093f2128 x6 : 0000000000000001
+[  366.193134] x5 : 0000000000000000 x4 : 0000000000000000 x3 : 0000000000000000
+[  366.200260] x2 : 0000000000000000 x1 : 0000000000000000 x0 : ffff000821e48fc0
+[  366.207387] Call trace:
+[  366.209819]  drm_atomic_helper_wait_for_vblanks.part.0+0x278/0x2a0
+[  366.215989]  drm_atomic_helper_commit_tail+0x80/0xa0
+[  366.220945]  commit_tail+0x128/0x17c
+[  366.224513]  drm_atomic_helper_commit+0x148/0x174
+[  366.229209]  drm_atomic_commit+0x4c/0x60
+[  366.233123]  drm_atomic_helper_set_config+0xa4/0x100
+[  366.238079]  drm_mode_setcrtc+0x19c/0x670
+[  366.242081]  drm_ioctl_kernel+0xc4/0x11c
+[  366.245996]  drm_ioctl+0x214/0x44c
+[  366.249390]  __arm64_sys_ioctl+0xb8/0xe0
+[  366.253304]  invoke_syscall+0x54/0x124
+[  366.257045]  el0_svc_common.constprop.0+0xd4/0xfc
+[  366.261742]  do_el0_svc+0x48/0xb0
+[  366.265048]  el0_svc+0x28/0x80
+[  366.268095]  el0t_64_sync_handler+0xa4/0x130
+[  366.272357]  el0t_64_sync+0x1a0/0x1a4
+[  366.276011] ---[ end trace a5aedf667084ad22 ]---
+
+
+
+[  376.447848] [drm:drm_crtc_commit_wait] *ERROR* flip_done timed out
+[  376.454041] [drm:drm_atomic_helper_wait_for_dependencies] *ERROR* [CRTC:39:crtc-0] commit wait timed out
+[  386.687849] [drm:drm_crtc_commit_wait] *ERROR* flip_done timed out
+[  386.694046] [drm:drm_atomic_helper_wait_for_dependencies] *ERROR* [PLANE:38:plane-4] commit wait timed out
+[  386.863846] ------------[ cut here ]------------
+[  386.868459] [CRTC:39:crtc-0] vblank wait timed out
+[  386.873283] WARNING: CPU: 3 PID: 202 at drivers/gpu/drm/drm_atomic_helper.c:1514 drm_atomic_helper_wait_for_vblanks.part.0+0x278/0x2a0
+[  386.885361] Modules linked in: zocl(O) mali(O) xilinx_hdmi_tx(O) dp159(O) xilinx_vphy(O) uio_pdrv_genirq dmaproxy(O)
+[  386.895891] CPU: 3 PID: 202 Comm: kworker/3:2 Tainted: G        W  O      5.15.36-xilinx-v2022.2 #1
+[  386.904925] Hardware name: xlnx,zynqmp (DT)
+[  386.909093] Workqueue: events drm_mode_rmfb_work_fn
+[  386.913962] pstate: 60000005 (nZCv daif -PAN -UAO -TCO -DIT -SSBS BTYPE=--)
+[  386.920913] pc : drm_atomic_helper_wait_for_vblanks.part.0+0x278/0x2a0
+[  386.927432] lr : drm_atomic_helper_wait_for_vblanks.part.0+0x278/0x2a0
+[  386.933951] sp : ffff80000abf3b60
+[  386.937249] x29: ffff80000abf3b60 x28: 000000000000000b x27: 0000000000000000
+[  386.944376] x26: 0000000000000001 x25: 0000000000000038 x24: ffff000821d04800
+[  386.951502] x23: 0000000000000001 x22: 0000000000000000 x21: ffff0008230f5e00
+[  386.958628] x20: ffff00081f14c900 x19: 0000000000000000 x18: ffffffffffffffff
+[  386.965754] x17: 0000000000000000 x16: 0000000000000019 x15: ffff80008abf3887
+[  386.972881] x14: 0000000000000000 x13: ffff8000093c6128 x12: 0000000000000774
+[  386.980007] x11: 000000000000027c x10: ffff8000093c6128 x9 : ffff8000093c6128
+[  386.987133] x8 : 00000000fffff7ff x7 : ffff8000093f2128 x6 : 0000000000000001
+[  386.994259] x5 : 0000000000000000 x4 : 0000000000000000 x3 : 0000000000000000
+[  387.001386] x2 : 0000000000000000 x1 : 0000000000000000 x0 : ffff000800a12f00
+[  387.008513] Call trace:
+[  387.010944]  drm_atomic_helper_wait_for_vblanks.part.0+0x278/0x2a0
+[  387.017114]  drm_atomic_helper_commit_tail+0x80/0xa0
+[  387.022070]  commit_tail+0x128/0x17c
+[  387.025638]  drm_atomic_helper_commit+0x148/0x174
+[  387.030334]  drm_atomic_commit+0x4c/0x60
+[  387.034248]  drm_framebuffer_remove+0x444/0x4d4
+[  387.038770]  drm_mode_rmfb_work_fn+0x74/0x9c
+[  387.043033]  process_one_work+0x1d8/0x390
+[  387.047034]  worker_thread+0x298/0x4e0
+[  387.050775]  kthread+0x120/0x130
+[  387.053995]  ret_from_fork+0x10/0x20
+[  387.057563] ---[ end trace a5aedf667084ad23 ]---
+root@petalinux:~# 
+root@petalinux:~# 
+
+```
+
+
+
+## 按`vcu_trd`更换为`M_AXI_HPM0_FPD`
+
+| git commit | xsa md5                          |
+| ---------- | -------------------------------- |
+| a4f26721   | fbb9846d15122b881c84e1dae0c5d3bf |
+
+
+
+![Snipaste_2026-01-23_16-54-41.png](a4f26721/Snipaste_2026-01-23_16-54-41.png)
+
+![Snipaste_2026-01-23_16-56-37.png](a4f26721/Snipaste_2026-01-23_16-56-37.png)
+
+还是报错的.
+
+
+
+### <a id="section1">mixer_primary_enable problem</a>
+
+这都已经和`vcu_trd`没有多大区别了呀.  研究一下`vcu_trd`预编译的镜像, 发现
+
+```bash
+rdf0428-zcu106-vcu-trd-2022-2/images/vcu_llp2_hdmi_nv12/autostart.sh
+```
+
+里面
+
+```bash
+#!/bin/sh
+
+# Source environment for init script
+source /etc/profile
+
+# Generate dbus machine ID
+dbus-uuidgen > /var/lib/dbus/machine-id
+
+# Config VCU QOS
+source /media/card/vcu/configure_qos.sh
+
+# load IRQ balancing script
+source /media/card/vcu/llp2_irq_balancing.sh
+
+# Disable primary plane
+echo N > /sys/module/xlnx_mixer/parameters/mixer_primary_enable
+
+# HDMI-Tx Link up for 4kp60
+sleep 2
+modetest -D a0070000.v_mix -s 39:3840x2160-60@BG24
+
+/sbin/sysctl -w net.core.rmem_default=60000000
+/sbin/sysctl -w net.core.rmem_max=60000000
+/sbin/sysctl -w net.core.wmem_default=60000000
+/sbin/sysctl -w net.core.wmem_max=60000000
+```
+
+
+
+有一句
+
+```bash
+# Disable primary plane
+echo N > /sys/module/xlnx_mixer/parameters/mixer_primary_enable
+
+```
+
+
+
+另外, 根据
+
+https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/37486769/Zynq+UltraScale+MPSoC+VCU+TRD+2018.3+-+Run+and+Build+Flow#ZynqUltraScale+MPSoCVCUTRD2018.3-RunandBuildFlow-3BuildFlow
+
+提到有
+
+```bash
+0004-drm_atomic_helper-Supress-vblank-timeout-warning-mes.patch
+0005-drm-xlnx_mixer-Dont-enable-primary-plane-by-default.patch
+```
+
+等文件
+
+应该是要默认关闭 `mixer` 的 `stream in`, 即使悬空都要关闭才行.
+
+```bash
+echo N > /sys/module/xlnx_mixer/parameters/mixer_primary_enable
+```
+
+然后`modetest`
+
+```bash
+modetest -M xlnx -s 41@39:3840x2160-60@BG24
+modetest -M xlnx \
+  -s 41@39:3840x2160-60@BG24 \
+  -P 38@39:3840x2160+0+0@BG24
+  
+modetest -D a0050000.v_mix -s 41:3840x2160-60@BG24
+```
+
+这里仅显示蓝色背景, 没有什么其他图案
+
+这样的状态运行`gst`是有图案的
+
+```bash
+gst-launch-1.0 \
+  videotestsrc pattern=smpte \
+  ! video/x-raw,format=BGRx,width=3840,height=2160,framerate=30/1 \
+  ! videoconvert \
+  ! kmssink driver-name=xlnx sync=false
+  
+```
+
+
+
+其实查看`kernel`源码
+
+能确认默认是打开的.
+
+<https://github.com/Xilinx/linux-xlnx/blob/xlnx_rebase_v5.15_LTS/drivers/gpu/drm/xlnx/xlnx_mixer.c>
+
+```c
+MODULE_PARM_DESC(mixer_primary_enable, "Enable mixer primary plane (default: 1)");
+```
+
+告警`vblank wait timed out`还是在源码里的.
+
+<https://github.com/Xilinx/linux-xlnx/blob/xlnx_rebase_v5.15_LTS/drivers/gpu/drm/drm_atomic_helper.c>
+
+```c
+		WARN(!ret, "[CRTC:%d:%s] vblank wait timed out\n",
+		     crtc->base.id, crtc->name);
+```
+
+而2020.1版本2018.3的版本的`vcu_trd`都给patch, 现在2022.2版本的`vcu_trd`没有给patch, 而是在初始化脚本修改.
+
+本质原因还是 `hdmi-txss`的`vtc`和独立`vtc`出现冲突
+
+而 `dp-txss`有 `xlnx,vtc-offset`属性, 应该不会出现这样的问题.
+
+<https://github.com/Xilinx/linux-xlnx/blob/xlnx_rebase_v5.15_LTS/Documentation/devicetree/bindings/display/xlnx/xlnx%2Cdp-tx.yaml>
+
+
+
+### 尝试运行 `X-server`
+
+修改 `rdf0421-zcu102-base-trd-2020-1/petalinux/bsp/project-spec/meta-user/recipes-apps/trd-files/files`
+
+`trd-utils.sh`
+
+```
+# return DRICard number
+function detect_screen() {
+	MONITOR_DP="/sys/class/drm/card*-DP*/status"
+	MONITOR_HDMI="/sys/class/drm/card*-HDMI*/status"
+
+	# Need to return 2 values from this script
+	# Return value-0 is device number for video_qt2 app
+	#   device number = 0 for DP-Tx, device number = 1 for HDMI-Tx for video_qt2
+	# Return value-1 is X11 DRI-card number
+	#   X11 DRI-card number = 0 for DP-Tx, X11 DRI-card number = 2 for HDMI-Tx
+	if [ $(cat ${MONITOR_DP} 2>/dev/null) = "connected" ]; then
+		echo "0" "0"
+	elif [ $(cat ${MONITOR_HDMI} 2>/dev/null) = "connected" ]; then
+		# echo "1" "2"
+		echo "0" "0"
+	fi
+}
+```
+
+`MONITOR_HDMI`分支这里要修改成 `0 0`, 否则就被意外修改为`/dev/dri/card2`. 因为目前我这个设计还没有`dp`口.
+
+
+
+`run_video.sh`
+
+```
+source /etc/trd/trd-utils.sh
+```
+
+要修改为实际位置, 因为我没有把`trd-utils.sh`放文件系统里.
+
+**如果用默认的armsoc**
+
+日志分析为
+
+> 现在不是“找不到显卡”问题了，而是：armsoc 选了一个 DRM/KMS 根本不支持的显示模式，`drmModeSetCrtc()` 直接被内核拒绝（EINVAL）。
+
+```
+(EE) ARMSOC(0): ERROR: drm failed to set mode: Invalid argument
+(EE) ARMSOC(0): ERROR: xf86SetDesiredModes() failed!
+
+```
+
+这不是 Xorg 配置错，也不是 EDID 问题，而是：
+
+> **armsoc 试图用一个它“以为可以”的 mode，去驱动 Xilinx DRM，但内核 DRM 驱动明确说：不行。**
+
+**如果用`modesetting`**
+
+### `/etc/X11/xorg.conf`
+
+```
+Section "Device"
+    Identifier  "ZynqMP"
+    Driver      "modesetting"
+    Option      "kmsdev" "/dev/dri/card0"
+EndSection
+
+Section "Screen"
+    Identifier "DefaultScreen"
+    Device     "ZynqMP"
+EndSection
+```
+
+禁用 armsoc
+
+```
+mv /usr/lib/xorg/modules/drivers/armsoc_drv.so \
+   /usr/lib/xorg/modules/drivers/armsoc_drv.so.bak
+```
+
+重启 X
+
+```
+startx
+```
+
+报glx 模块不存在（不是警告，是致命前兆）
+
+```
+(II) LoadModule: "glx"
+(WW) Warning, couldn't open module glx
+(EE) Failed to load module "glx" (module does not exist, 0)
+```
+
+配置文件系统应该选
+
+```
+packagegroup-petalinux-graphics
+packagegroup-petalinux-x11
+packagegroup-petalinux-opencv (可选)
+
+```
+
+而`2022.2`版本有的已经没有这个选项了, 能选的已经选了.
+
+继续用这个路线只有降级工程版本到`2020.1`, 再比较`zcu102 base_trd`. 其实可以另外按照`zcu106 vcu_trd`这条线也继续下去.
+
+为了在`host`使用`petalinux 2020.1`, 尝试用容器运行, 实际上也不行. 只能在虚拟机里搞了. 
+
+### 尝试用容器运行`petalinux 2020.1`
+
+`docker`拉取的加速不在这里记录, 中国大陆不能直接连. `podman`却可以拉这些镜像, 基本想等的.
+
+````
+$ docker pull ubuntu:18.04
+
+$ docker run -d --name ubuntu_container --restart always -v /opt/:/opt/ -v /home/andy/:/home/andy/ -i -t ubuntu:18.04 bash
+$ docker exec -it ubuntu_container /bin/bash
+
+
+# dpkg --add-architecture i386
+# apt update
+# apt install lsb-release xvfb x11-utils dbus-x11 rlwrap locales libtinfo5 aptitude git make net-tools libncurses5-dev tftpd zlib1g-dev libssl-dev flex bison libselinux1 gnupg wget diffstat chrpath socat xterm autoconf libtool tar unzip texinfo zlib1g-dev gcc-multilib build-essential libsdl1.2-dev libglib2.0-dev screen pax gzip libboost-dev libboost-tools-dev libboost-timer-dev libcoinutils-dev libboost-all-dev libgtk-3-dev gtk3-nocsd sudo
+# dpkg-reconfigure locales
+> choose en_US.UTF-8 UTF-8, at about number 159
+> and choose num 3, en_US.UTF-8
+# dpkg-reconfigure dash
+> choose no
+# adduser andy
+# usermod -a -G sudo andy
+> ...
+# su andy
+
+sudo apt-get install u-boot-tools lrzsz minicom nfs-kernel-server tftpd xinetd libncurses5-dev vim ctags cscope
+  
+
+
+
+sudo dpkg-reconfigure dash # choose no
+
+
+
+## 配置tftp
+
+/etc/xinetd.d/tftp
+
+```
+service tftp
+{
+protocol = udp
+port = 69
+socket_type = dgram
+wait = yes
+user = nobody
+server = /usr/sbin/in.tftpd
+server_args = /tftpboot
+disable = no
+}
+```
+
+tftp目录权限修改
+
+```
+sudo mkdir -p /tftpboot
+sudo chmod 777 /tftpboot
+sudo chown nobody /tftpboot
+```
+
+启动tftp服务
+
+```
+sudo /etc/init.d/xinetd stop
+sleep 1
+sudo /etc/init.d/xinetd start
+```
+容器内继续安装一些软件和设置, 这里不记录
+
+Processing triggers for libc-bin (2.27-3ubuntu1.6) ...
+andy@6c65ba62f798:~$ sudo vim /etc/xinetd.d/tftp
+andy@6c65ba62f798:~$ sudo mkdir -p /tftpboot
+andy@6c65ba62f798:~$ sudo chmod 777 /tftpboot
+andy@6c65ba62f798:~$ sudo chown nobody /tftpboot
+andy@6c65ba62f798:~$ sudo /etc/init.d/xinetd start
+ * Starting internet superserver xinetd                                                                                                                                                                     [ OK ] 
+andy@6c65ba62f798:~$ cd workdir/zirui/06_vcu_trd_port/
+base_trd_block_diagram.jpg      rdf0421-zcu102-base-trd-2020-1/ rdf0428-zcu106-vcu-trd-2020.1/  ug1221-zcu102-base-trd.pdf      vcu_trd_block_diagram.png       
+P11/                            rdf0428-zcu106-vcu-trd-2018-3/  rdf0428-zcu106-vcu-trd-2022-2/  ug1250-zcu106-vcu-trd.pdf       
+andy@6c65ba62f798:~$ cd workdir/zirui/06_vcu_trd_port/rdf0421-zcu102-base-trd-2020-1/
+IMPORTANT_NOTICE_CONCERNING_THIRD_PARTY_CONTENT.txt  sd_card/                                             zcu102_base_trd/
+petalinux/                                           vivado/                                              
+README.txt                                           workspaces/                                          
+andy@6c65ba62f798:~$ cd workdir/zirui/06_vcu_trd_port/rdf0421-zcu102-base-trd-2020-1/petalinux/bsp
+andy@6c65ba62f798:~/workdir/zirui/06_vcu_trd_port/rdf0421-zcu102-base-trd-2020-1/petalinux/bsp$ source /opt/Xilinx/PetaLinux/2020.1/tool/settings.sh
+PetaLinux environment set to '/opt/Xilinx/PetaLinux/2020.1/tool'
+WARNING: This is not a supported OS
+INFO: Checking free disk space
+INFO: Checking installed tools
+INFO: Checking installed development libraries
+INFO: Checking network and other services
+
+
+andy@34a2afc24b31:~/workdir/zirui/06_vcu_trd_port/rdf0421-zcu102-base-trd-2020-1/petalinux/bsp$ petalinux-config 
+INFO: sourcing build tools
+[INFO] generating Kconfig for project
+[INFO] menuconfig project
+ERROR: Failed to menu config project component 
+ERROR: Failed to config project.
+
+andy@6c65ba62f798:~/workdir/zirui/06_vcu_trd_port/rdf0421-zcu102-base-trd-2020-1/petalinux/bsp$ cat build/config.log
+[INFO] menuconfig project
+env: ‘mconf’: No such file or directory
+ERROR: Failed to config project.
+
+
+````
+
+`mconf`是`petalinux`内部的工具
+
+```
+$ cd /opt/Xilinx/PetaLinux/2020.1/tool
+andy@andy-zirui:/opt/Xilinx/PetaLinux/2020.1/tool
+$ find . -name "mconf"
+./components/yocto/buildtools/sysroots/x86_64-petalinux-linux/usr/bin/mconf
+andy@andy-zirui:/opt/Xilinx/PetaLinux/2020.1/tool
+$ ./components/yocto/buildtools/sysroots/x86_64-petalinux-linux/usr/bin/mconf
+bash: ./components/yocto/buildtools/sysroots/x86_64-petalinux-linux/usr/bin/mconf: No such file or directory
+andy@andy-zirui:/opt/Xilinx/PetaLinux/2020.1/tool
+$ file ./components/yocto/buildtools/sysroots/x86_64-petalinux-linux/usr/bin/mconf
+./components/yocto/buildtools/sysroots/x86_64-petalinux-linux/usr/bin/mconf: symbolic link to kconfig-mconf
+andy@andy-zirui:/opt/Xilinx/PetaLinux/2020.1/tool
+$ ll ./components/yocto/buildtools/sysroots/x86_64-petalinux-linux/usr/bin/mconf
+lrwxrwxrwx 1 andy andy 13 Jun  9  2023 ./components/yocto/buildtools/sysroots/x86_64-petalinux-linux/usr/bin/mconf -> kconfig-mconf*
+andy@andy-zirui:/opt/Xilinx/PetaLinux/2020.1/tool
+$ ./components/yocto/buildtools/sysroots/x86_64-petalinux-linux/usr/bin/kconfig-mconf
+bash: ./components/yocto/buildtools/sysroots/x86_64-petalinux-linux/usr/bin/kconfig-mconf: No such file or directory
+```
+
+
+
+尝试失败. 还是用虚拟机?
+
+实际上虚拟机用复制的办法也一样报没有`mconf`, 虚拟机确认之前是可以用的, 唯一的差别是之前是直接安装, 这次是安装后的复制, 差别是路径.
+
+## **`petalinux2020.1`出问题的真相**
+
+`petalinux`安装的时候指定了路径, 会给里面不仅是给大量文本文件添加绝对路径, 而且给大量二进制文件也添加了绝对路径, 所以, 用剪切复制的办法放到非原始位置, 就会出错. 一个办法是确定安装位置, 以后一直都用这个位置, 比如我这里都定义为`/opt/Xilinx/PetaLinux/xxxx/tool`, 用到的每个版本都这样. 云存储的备份也是默认这个位置, 迁移其他位置就直接用安装文件安装就是, 没有必要去大量修改文本二进制混合文件的内容.
+
+
+
+## `petalinux`最终解决方案
+
+`docker` / `podman` 或 `distrobox`使用`petalinux`版本推荐的`os`版本的容器. 可以避免工具链不兼容比如要求安装特定`gcc`版本, 新 `glibc` / 新 `gcc`环境下的导致编译失败问题.
+
+
+
+
+## 仿照`zcu102 base_trd`的`base_trd`工程
+
+这个只出到2020.1的版本, 可以基于这个来搞视频流`v4l2`路径. 这样可以排除 `zcu106 vcu_trd`的深度绑定`vcu`的情况.
+
+### 测试版本1
+
+`vivado`实际工程和原工程的主要区别是
+
+* 去掉了`hdmi-rx`
+
+* 简化了 `csi-rx`路径
+
+* 没有添加`dp-tx`
+
+* 中断系统原设计用的`axi-intr`控制器, 这里直接用常规的`ps`的中断控制器
+
+* 取消原设计`vphy`的`dru-clk`
+
+* 地址分布变化
+
+  
+
+#### 关于`vphy`的`dru-clk`
+
+`dru-clk` —— DRU（数字时钟恢复）的工作时钟
+
+用途：
+
+- 给 **DRU 数字逻辑**跑算法用
+- 只在 **RX + 异步输入** 场景存在
+- TX-only的场景, **`dru-clk` 不需要、也不应该出现**
+
+
+
+自动产生的`device-tree`和`port`进来的标签`label`有冲突
+
+```
+Subprocess output:
+/home/andy/Downloads/tmp/peta_p11/petalinux/project-spec/configs/../../components/plnx_workspace/device-tree/device-tree/pl.dtsi:14.27-24.5: ERROR (duplicate_label): /amba_pl@0/i2c@a0030000: Duplicate label 'axi_iic_0' on /amba_pl@0/i2c@a0030000 and /amba/i2c@a0030000
+/home/andy/Downloads/tmp/peta_p11/petalinux/project-spec/configs/../../components/plnx_workspace/device-tree/device-tree/pl.dtsi:25.27-35.5: ERROR (duplicate_label): /amba_pl@0/i2c@a0080000: Duplicate label 'axi_iic_1' on /amba_pl@0/i2c@a0080000 and /amba/i2c@a0080000
+/home/andy/Downloads/tmp/peta_p11/petalinux/project-spec/configs/../../components/plnx_workspace/device-tree/device-tree/pl.dtsi:36.27-46.5: ERROR (duplicate_label): /amba_pl@0/i2c@a0090000: Duplicate label 'axi_iic_2' on /amba_pl@0/i2c@a0090000 and /amba/i2c@a0090000
+/home/andy/Downloads/tmp/peta_p11/petalinux/project-spec/configs/../../components/plnx_workspace/device-tree/device-tree/pl.dtsi:342.28-344.6: ERROR (duplicate_label): /amba_pl@0/vid_phy_controller@a0150000/vphy_lane@0: Duplicate label 'vphy_lane0' on /amba_pl@0/vid_phy_controller@a0150000/vphy_lane@0 and /amba/vphy@a0150000/vphy_lane@0
+/home/andy/Downloads/tmp/peta_p11/petalinux/project-spec/configs/../../components/plnx_workspace/device-tree/device-tree/pl.dtsi:345.28-347.6: ERROR (duplicate_label): /amba_pl@0/vid_phy_controller@a0150000/vphy_lane@1: Duplicate label 'vphy_lane1' on /amba_pl@0/vid_phy_controller@a0150000/vphy_lane@1 and /amba/vphy@a0150000/vphy_lane@1
+/home/andy/Downloads/tmp/peta_p11/petalinux/project-spec/configs/../../components/plnx_workspace/device-tree/device-tree/pl.dtsi:348.28-350.6: ERROR (duplicate_label): /amba_pl@0/vid_phy_controller@a0150000/vphy_lane@2: Duplicate label 'vphy_lane2' on /amba_pl@0/vid_phy_controller@a0150000/vphy_lane@2 and /amba/vphy@a0150000/vphy_lane@2
+/home/andy/Downloads/tmp/peta_p11/petalinux/project-spec/configs/../../components/plnx_workspace/device-tree/device-tree/pl.dtsi:351.28-353.6: ERROR (duplicate_label): /amba_pl@0/vid_phy_controller@a0150000/vphy_lane@3: Duplicate label 'vphy_lane3' on /amba_pl@0/vid_phy_controller@a0150000/vphy_lane@3 and /amba/vphy@a0150000/vphy_lane@3
+ERROR: Input tree has errors, aborting (use -f to force output)
+```
+
+
+
+删节点, 可以在顶层使用`&label`, 也可以在父节点中使用节点名称
+
+```dtd
+在&amba{}外
+/delete-node/ &i2c1;
+
+在&amba{}内
+/delete-node/ i2c1;
+/delete-node/ axis_broadcasterhdmi_input_axis_broadcaster_0@0;
+
+要删除的节点全称像这样
+/amba_pl@0/vid_phy_controller@a0150000
+
+```
+
+
+
+#### 运行镜像
+
+没有产生`boot.scr`. 暂时用原来的`boot.scr`引导`sd`启动镜像, 这次启动设备节点有问题
+
+```bash
+[   25.743330] usb 2-1: new SuperSpeed Gen 1 USB device number 4 using xhci-hcd
+[   25.753579] xilinx-video amba:vcap_tpg: /amba/vcap_tpg/ports/port@0 initialization failed
+[   25.761752] xilinx-video amba:vcap_tpg: DMA initialization failed
+[   25.770855] usb 2-1: New USB device found, idVendor=05e3, idProduct=0620, bcdDevice= 5.20
+[   25.779033] usb 2-1: New USB device strings: Mfr=1, Product=2, SerialNumber=0
+[   25.786166] usb 2-1: Product: USB3.0 Hub
+[   25.790078] usb 2-1: Manufacturer: GenesysLogic
+[   25.823826] hub 2-1:1.0: USB hub found
+[   25.827883] hub 2-1:1.0: 4 ports detected
+[   25.833409] xilinx-video amba:vcap_tpg: /amba/vcap_tpg/ports/port@0 initialization failed
+[   25.841582] xilinx-video amba:vcap_tpg: DMA initialization failed
+udhcpc: no lease, forking to background
+done.
+Starting system message bus: dbus.
+Starting haveged: haveged: listening socket at 3
+haveged: haveged starting up
+
+
+Starting Dropbear SSH server: dropbear.
+Starting bluetooth: bluetoothd.
+Starting internet superserver: inetd.
+Starting syslogd/klogd: done
+[ ok ]rting Avahi mDNS/DNS-SD Daemon: avahi-daemon
+Starting Telephony daemon
+Starting tcf-agent: [   29.081900] random: crng init done
+OK
+Setting console loglevel to 0 ...
+
+PetaLinux 2020.1 petalinux ttyPS0
+
+
+root@petalinux:~# 
+root@petalinux:~# ****************************************************
+** Zynq UltraScale+ MPSoC Base TRD Qt Application **
+****************************************************
+/etc/trd/trd-utils.sh: line 11: [: =: unary operator expected
+/etc/trd/trd-utils.sh: line 13: [: =: unary operator expected
+ERROR: No display device found
+
+root@petalinux:~# 
+root@petalinux:~# 
+root@petalinux:~# 
+root@petalinux:~# 
+root@petalinux:~# 
+root@petalinux:~# 
+root@petalinux:~# 
+root@petalinux:~# 
+root@petalinux:~# 
+root@petalinux:~# echo N > /sys/module/xlnx_mixer/parameters/mixer_primary_enable
+-sh: /sys/module/xlnx_mixer/parameters/mixer_primary_enable: No such file or directory
+root@petalinux:~# ls /sys/module/                                                
+Display all 112 possibilities? (y or n)
+8250/                    bridge/                  cfg80211/                hci_uart/                mmcblk/                  rcutree/                 tcp_cubic/               wlcore_sdio/
+8250_core/               btbcm/                   configfs/                hci_vhci/                module/                  rfcomm/                  uio_pdrv_genirq/         workqueue/
+ahci_ceva/               btintel/                 cpufreq/                 hid/                     mtdoops/                 rfkill/                  usb_storage/             xhci_hcd/
+asix/                    btmrvl/                  cpuidle/                 hidp/                    nf_conntrack/            scsi_mod/                usbcore/                 xilinx_hdmi_tx/
+ath3k/                   btmrvl_sdio/             cryptomgr/               i2c_algo_bit/            nfs/                     sdhci/                   usbhid/                  xilinx_multi_scaler/
+auth_rpcgss/             btqca/                   dmaproxy/                ipv6/                    nfs_layout_nfsv41_files/ sit/                     uvcvideo/                xilinx_uartps/
+bcm203x/                 btrtl/                   dmatest/                 kernel/                  nfsv4/                   snd/                     v4l2_mem2mem/            xilinx_video/
+bfusb/                   btsdio/                  dns_resolver/            keyboard/                of_xilinx_wdt/           snd_pcm/                 videobuf2_common/        xilinx_vphy/
+blk_cgroup/              btusb/                   dp159/                   libahci/                 overlay/                 snd_timer/               videobuf2_v4l2/          xlnx_drm/
+block/                   btwilink/                drm/                     libata/                  pktgen/                  snd_usb_audio/           vivid/                   xz_dec/
+bluetooth/               cadence_wdt/             drm_kms_helper/          lockd/                   printk/                  spurious/                vt/                      zocl/
+bnep/                    can/                     edac_core/               loop/                    psmouse/                 srcutree/                watchdog/                zynqmp_dpsub/
+bpa10x/                  can_gw/                  fb/                      mac80211/                random/                  sunrpc/                  wl18xx/                  zynqmp_fpga/
+brd/                     cdc_ncm/                 firmware_class/          mali/                    rcupdate/                sysrq/                   wlcore/                  zynqmp_r5_remoteproc/
+root@petalinux:~# ls /sys/module/x
+xhci_hcd/            xilinx_hdmi_tx/      xilinx_multi_scaler/ xilinx_uartps/       xilinx_video/        xilinx_vphy/         xlnx_drm/            xz_dec/              
+root@petalinux:~# ls /sys/module/x
+xhci_hcd/            xilinx_hdmi_tx/      xilinx_multi_scaler/ xilinx_uartps/       xilinx_video/        xilinx_vphy/         xlnx_drm/            xz_dec/              
+root@petalinux:~# dmesg | grep mix
+[   14.212036] OF: /amba/v_mix@a00b0000: #gpio-cells = 3 found -1
+[   14.217634] xlnx-mixer a00b0000.v_mix: No reset gpio info from dts for mixer
+[   14.224636] xlnx-mixer a00b0000.v_mix: Failed to probe mixer
+[   14.230261] xlnx-mixer: probe of a00b0000.v_mix failed with error -22
+root@petalinux:~# dmesg | grep gpio
+[   14.212036] OF: /amba/v_mix@a00b0000: #gpio-cells = 3 found -1
+[   14.217634] xlnx-mixer a00b0000.v_mix: No reset gpio info from dts for mixer
+[   14.821999] XGpio: gpio@a00f0000: registered, base is 480
+[   14.830957] XGpio: gpio@a0140000: registered, base is 448
+[   14.953109] OF: /amba/fb_wr@a0110000: #gpio-cells = 3 found -1
+[   15.416494] OF: /amba/tpg@a0130000: #gpio-cells = 3 found -
+```
+
+这个可能和`amba`和`amba_pl`这样的标签差异有关系, 把`amba`换成`amba_pl`大概可以解决`reset-gpio`的问题 [不是的]
+
+实际上是 `axi-gpio` 是 3 个 cell
+
+这 3 个 cell 的含义是：
+
+```dtd
+<&gpio  gpio-number  flags  channel>
+```
+
+| cell | 含义                                 |
+| ---- | ------------------------------------ |
+| 0    | GPIO index                           |
+| 1    | GPIO flags（0 / GPIO_ACTIVE_LOW 等） |
+| 2    | **通道号（channel）**                |
+
+正确写法（AXI GPIO）
+
+```dtd
+reset-gpios = <&rest_gpio 9 GPIO_ACTIVE_LOW 0>;
+```
+
+或更明确一点：
+
+```dtd
+reset-gpios = <&rest_gpio 9 1 0>;
+```
+
+还是报错
+
+```bash
+[   17.865709] [drm] Probing for xlnx,zocl
+[   17.869555] zocl-drm amba_pl@0:zyxclmm_drm: IRQ index 0 not found
+[   17.875716] [drm] FPGA programming device pcap founded.
+[   17.880935] [drm] PR Isolation addr 0x0
+[   17.881210] [drm] Initialized zocl 2018.2.1 20180313 for amba_pl@0:zyxclmm_drm on minor 0
+[   17.893544] xilinx-frmbuf a0110000.fb_wr: Probe deferred due to GPIO reset defer
+Running postinst /etc/rpm-postinsts/104-sysvinit-inittab...
+[   17.901576] xilinx-video amba_pl@0:vcap_tpg: /amba_pl@0/vcap_tpg/ports/port@0 initialization failed
+[   17.915393] xilinx-video amba_pl@0:vcap_tpg: DMA initialization failed
+update-rc.d: /etc/init.d/run-postinsts exists during rc.d purge (continuing)
+INIT: Entering runlevel: 5
+Configuring network interfaces... [   18.009115] pps pps0: new PPS source ptp0
+[   18.013136] macb ff0e0000.ethernet: gem-ptp-timer ptp clock registered.
+udhcpc: started, v1.31.0
+udhcpc: sending discover
+udhcpc: sending discover
+udhcpc: sending discover
+[   25.771151] usb 1-1: new high-speed USB device number 4 using xhci-hcd
+[   25.928800] usb 1-1: New USB device found, idVendor=05e3, idProduct=0610, bcdDevice= 5.20
+[   25.936970] usb 1-1: New USB device strings: Mfr=1, Product=2, SerialNumber=0
+[   25.944104] usb 1-1: Product: USB2.0 Hub
+[   25.948016] usb 1-1: Manufacturer: GenesysLogic
+[   26.017546] hub 1-1:1.0: USB hub found
+[   26.021839] hub 1-1:1.0: 4 ports detected
+[   26.081104] usb 2-1: new SuperSpeed Gen 1 USB device number 4 using xhci-hcd
+[   26.091036] xilinx-frmbuf a0110000.fb_wr: Probe deferred due to GPIO reset defer
+[   26.098963] xilinx-video amba_pl@0:vcap_tpg: /amba_pl@0/vcap_tpg/ports/port@0 initialization failed
+[   26.108012] xilinx-video amba_pl@0:vcap_tpg: DMA initialization failed
+[   26.117643] usb 2-1: New USB device found, idVendor=05e3, idProduct=0620, bcdDevice= 5.20
+[   26.125820] usb 2-1: New USB device strings: Mfr=1, Product=2, SerialNumber=0
+[   26.132951] usb 2-1: Product: USB3.0 Hub
+[   26.136869] usb 2-1: Manufacturer: GenesysLogic
+[   26.161593] hub 2-1:1.0: USB hub found
+[   26.165643] hub 2-1:1.0: 4 ports detected
+[   26.171034] xilinx-frmbuf a0110000.fb_wr: Probe deferred due to GPIO reset defer
+[   26.178979] xilinx-video amba_pl@0:vcap_tpg: /amba_pl@0/vcap_tpg/ports/port@0 initialization failed
+[   26.188020] xilinx-video amba_pl@0:vcap_tpg: DMA initialization failed
+
+root@petalinux:~# dmesg | grep gpio
+[   14.796161] XGpio: gpio@a00f0000: registered, base is 480
+[   14.805129] XGpio: gpio@a0140000: registered, base is 448
+
+root@petalinux:~# dmesg | grep reset
+[   14.919206] xilinx-frmbuf a00a0000.v_frmbuf_rd: Unable to locate reset property in dt
+[   14.934455] xilinx-frmbuf a00d0000.v_frmbuf_wr: Unable to locate reset property in dt
+[   14.949615] xilinx-frmbuf a0110000.fb_wr: Probe deferred due to GPIO reset defer
+[   15.466087] xilinx-frmbuf a0110000.fb_wr: Probe deferred due to GPIO reset defer
+[   15.489778] xilinx-frmbuf a0110000.fb_wr: Probe deferred due to GPIO reset defer
+[   15.617640] xilinx-frmbuf a0110000.fb_wr: Probe deferred due to GPIO reset defer
+[   16.005090] xilinx-frmbuf a0110000.fb_wr: Probe deferred due to GPIO reset defer
+[   16.050952] xilinx-frmbuf a0110000.fb_wr: Probe deferred due to GPIO reset defer
+[   16.059821] xilinx-frmbuf a0110000.fb_wr: Probe deferred due to GPIO reset defer
+[   16.065455] xilinx-frmbuf a0110000.fb_wr: Probe deferred due to GPIO reset defer
+[   16.196763] xilinx-frmbuf a0110000.fb_wr: Probe deferred due to GPIO reset defer
+[   16.238502] xilinx-frmbuf a0110000.fb_wr: Probe deferred due to GPIO reset defer
+[   17.893544] xilinx-frmbuf a0110000.fb_wr: Probe deferred due to GPIO reset defer
+[   26.091036] xilinx-frmbuf a0110000.fb_wr: Probe deferred due to GPIO reset defer
+[   26.171034] xilinx-frmbuf a0110000.fb_wr: Probe deferred due to GPIO reset defer
+
+```
+
+换成这样也试了
+
+```dtd
+	reset-gpios = <&rest_gpio 9 1 1>; 
+```
+
+也可以定义
+
+```dtd
+rest_gpio: gpio@a00f0000 {
+		#gpio-cells = <2>;
+		...
+
+
+reset-gpios = <&rest_gpio 9 1>; 
+```
+
+
+
+反正编译能通过, 启动过程还是看到一样的报错. 目前无法解决
+
+操作`GPIO`看起来没问题
+
+```
+ls /sys/class/gpio
+echo 489 > /sys/class/gpio/export   # 480 + 9
+cat /sys/class/gpio/gpio489/value
+
+```
+
+注意到
+
+```bash
+[   14.792763] GPIO IRQ not connected
+[   14.796161] XGpio: gpio@a00f0000: registered, base is 480
+[   14.801728] GPIO IRQ not connected
+[   14.805129] XGpio: gpio@a0140000: registered, base is 448
+```
+
+
+
+### 测试版本2
+
+这样, 再改`vivado`工程, 
+
+* 中断系统原设计用的`axi-intr`控制器, 这里也改成一样的
+
+* `reset-gpio`改成也用`ps gpio`
+
+* 主要器件地址保持原设计
+
+
+
+#### 这次都没有进系统就挂了
+
+```bash
+[   14.735344] xilinx-zynqmp-dma fd500000.dma: ZynqMP DMA driver Probe success
+[   14.742451] xilinx-zynqmp-dma fd510000.dma: ZynqMP DMA driver Probe success
+[   14.749555] xilinx-zynqmp-dma fd520000.dma: ZynqMP DMA driver Probe success
+[   14.756655] xilinx-zynqmp-dma fd530000.dma: ZynqMP DMA driver Probe success
+[   14.763749] xilinx-zynqmp-dma fd540000.dma: ZynqMP DMA driver Probe success
+[   14.770846] xilinx-zynqmp-dma fd550000.dma: ZynqMP DMA driver Probe success
+[   14.777949] xilinx-zynqmp-dma fd560000.dma: ZynqMP DMA driver Probe success
+[   14.785047] xilinx-zynqmp-dma fd570000.dma: ZynqMP DMA driver Probe success
+[   14.792213] xilinx-zynqmp-dma ffa80000.dma: ZynqMP DMA driver Probe success
+[   14.799318] xilinx-zynqmp-dma ffa90000.dma: ZynqMP DMA driver Probe success
+[   14.806420] xilinx-zynqmp-dma ffaa0000.dma: ZynqMP DMA driver Probe success
+[   14.813513] xilinx-zynqmp-dma ffab0000.dma: ZynqMP DMA driver Probe success
+[   14.820608] xilinx-zynqmp-dma ffac0000.dma: ZynqMP DMA driver Probe success
+[   14.827706] xilinx-zynqmp-dma ffad0000.dma: ZynqMP DMA driver Probe success
+[   14.834811] xilinx-zynqmp-dma ffae0000.dma: ZynqMP DMA driver Probe success
+[   14.841907] xilinx-zynqmp-dma ffaf0000.dma: ZynqMP DMA driver Probe success
+[   41.071128] rcu: INFO: rcu_sched detected stalls on CPUs/tasks:
+[   41.077035] rcu:     0-...0: (23 ticks this GP) idle=99a/1/0x4000000000000000 softirq=79/80 fqs=2254 
+[   41.085980]  (detected by 2, t=5277 jiffies, g=3593, q=2)
+[   41.091361] Task dump for CPU 0:
+[   41.094572] kworker/0:1     R  running task        0    38      2 0x0000000a
+[   41.101620] Workqueue: events deferred_probe_work_func
+[   41.106741] Call trace:
+[   41.109176]  __switch_to+0x1c4/0x288
+[   41.112742]  proc_register+0x38/0x1a0
+[   41.116395]  proc_mkdir_data+0x6c/0x90
+[   41.120127]  proc_mkdir+0x18/0x20
+[   41.123427]  register_handler_proc+0x124/0x150
+[   41.127862]  __setup_irq+0x56c/0x7f0
+[   41.131420]  request_threaded_irq+0xd4/0x190
+[   41.135673]  devm_request_threaded_irq+0x74/0xe8
+[   41.140275]  gpiod_set_value+0x48/0x60
+[   41.144016]  xilinx_frmbuf_chan_reset+0x38/0x78
+[   41.148537]  xilinx_frmbuf_probe+0x300/0x850
+[   41.152791]  platform_drv_probe+0x50/0xa0
+[   41.156783]  really_probe+0xd8/0x2f8
+[   41.160342]  driver_probe_device+0x54/0xe8
+[   41.164422]  __device_attach_driver+0x80/0xb8
+[   41.168761]  bus_for_each_drv+0x74/0xc0
+[   41.172580]  __device_attach+0xdc/0x138
+[   41.176400]  device_initial_probe+0x10/0x18
+[   41.180566]  bus_probe_device+0x90/0x98
+[   41.184385]  deferred_probe_work_func+0x6c/0xa0
+[   41.188899]  process_one_work+0x1c4/0x338
+[   41.192891]  worker_thread+0x260/0x488
+[   41.196625]  kthread+0x120/0x128
+[   41.199836]  ret_from_fork+0x10/0x18
+[  104.095128] rcu: INFO: rcu_sched detected stalls on CPUs/tasks:
+[  104.101038] rcu:     0-...0: (23 ticks this GP) idle=99a/1/0x4000000000000000 softirq=79/80 fqs=2859 
+[  104.109984]  (detected by 3, t=21033 jiffies, g=3593, q=2)
+[  104.115451] Task dump for CPU 0:
+[  104.118663] kworker/0:1     R  running task        0    38      2 0x0000000a
+[  104.125705] Workqueue: events deferred_probe_work_func
+[  104.130832] Call trace:
+[  104.133265]  __switch_to+0x1c4/0x288
+[  104.136823]  proc_register+0x38/0x1a0
+[  104.140469]  proc_mkdir_data+0x6c/0x90
+[  104.144201]  proc_mkdir+0x18/0x20
+[  104.147499]  register_handler_proc+0x124/0x150
+[  104.151926]  __setup_irq+0x56c/0x7f0
+[  104.155485]  request_threaded_irq+0xd4/0x190
+[  104.159738]  devm_request_threaded_irq+0x74/0xe8
+[  104.164339]  gpiod_set_value+0x48/0x60
+[  104.168071]  xilinx_frmbuf_chan_reset+0x38/0x78
+[  104.172585]  xilinx_frmbuf_probe+0x300/0x850
+[  104.176838]  platform_drv_probe+0x50/0xa0
+[  104.180831]  really_probe+0xd8/0x2f8
+[  104.184390]  driver_probe_device+0x54/0xe8
+[  104.188469]  __device_attach_driver+0x80/0xb8
+[  104.192809]  bus_for_each_drv+0x74/0xc0
+[  104.196628]  __device_attach+0xdc/0x138
+[  104.200448]  device_initial_probe+0x10/0x18
+[  104.204614]  bus_probe_device+0x90/0x98
+[  104.208433]  deferred_probe_work_func+0x6c/0xa0
+[  104.212946]  process_one_work+0x1c4/0x338
+[  104.216939]  worker_thread+0x260/0x488
+[  104.220672]  kthread+0x120/0x128
+[  104.223883]  ret_from_fork+0x10/0x18
+```
+
+必然挂在`xilinx-zynqmp-dma ffaf0000.dma: ZynqMP DMA driver Probe success`, 后面系统炸了的信息不一定每次都爆出来.
+
+#### 大概的原因看到这里
+
+```bash
+[   14.067916] Freeing initrd memory: 210500K
+[   14.068408] hw perfevents: no interrupt-affinity property for /pmu, guessing.
+[   14.073650] hw perfevents: enabled with armv8_pmuv3 PMU driver, 7 counters available
+[   14.082070] Initialise system trusted keyrings
+[   14.085713] workingset: timestamp_bits=46 max_order=20 bucket_order=0
+[   14.092793] NFS: Registering the id_resolver key type
+[   14.097017] Key type id_resolver registered
+[   14.101159] Key type id_legacy registered
+[   14.105141] nfs4filelayout_init: NFSv4 File Layout Driver Registering...
+[   14.111809] jffs2: version 2.2. (NAND) © 2001-2006 Red Hat, Inc.
+[   14.133477] NET: Registered protocol family 38
+[   14.133520] Key type asymmetric registered
+[   14.136349] Asymmetric key parser 'x509' registered
+[   14.141212] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 247)
+[   14.148543] io scheduler mq-deadline registered
+[   14.153039] io scheduler kyber registered
+[   14.159050] xilinx-frmbuf b0020000.v_frmbuf_wr: failed to get ap_clk (-517)
+[   14.163985] xilinx-frmbuf b0050000.v_frmbuf_wr: failed to get ap_clk (-517)
+[   14.194344] Serial: 8250/16550 driver, 4 ports, IRQ sharing disabled
+[   14.198334] xlnx,csc-bridge b0060000.v_proc_ss: failed to get aclk -517
+[   14.201773] xlnx,scaler-bridge b0080000.v_proc_ss: failed to get axi lite clk -517
+[   14.209156] xlnx,scaler-bridge b0080000.v_proc_ss: parse_of failed
+[   14.215836] cacheinfo: Unable to detect cache hierarchy for CPU 0
+[   14.225439] brd: module loaded
+[   14.229761] loop: module loaded
+[   14.230533] mtdoops: mtd device (mtddev=name/number) must be supplied
+[   14.235028] libphy: Fixed MDIO Bus: probed
+[   14.238877] tun: Universal TUN/TAP device driver, 1.6
+[   14.243047] CAN device driver interface
+[   14.247747] usbcore: registered new interface driver asix
+[   14.252186] usbcore: registered new interface driver ax88179_178a
+[   14.258216] usbcore: registered new interface driver cdc_ether
+[   14.264011] usbcore: registered new interface driver net1080
+[   14.269635] usbcore: registered new interface driver cdc_subset
+[   14.275516] usbcore: registered new interface driver zaurus
+[   14.281062] usbcore: registered new interface driver cdc_ncm
+[   14.287501] usbcore: registered new interface driver uas
+[   14.291961] usbcore: registered new interface driver usb-storage
+[   14.298460] rtc_zynqmp ffa60000.rtc: registered as rtc0
+[   14.303149] i2c /dev entries driver
+[   14.306986] vivid-000: using single planar format API
+[   14.313094] vivid-000: V4L2 capture device registered as video0
+[   14.317519] vivid-000: V4L2 output device registered as video1
+[   14.323326] vivid-000: V4L2 capture device registered as vbi0, supports raw and sliced VBI
+[   14.331529] vivid-000: V4L2 output device registered as vbi1, supports raw and sliced VBI
+[   14.339662] vivid-000: V4L2 capture device registered as swradio0
+[   14.345711] vivid-000: V4L2 receiver device registered as radio0
+[   14.351682] vivid-000: V4L2 transmitter device registered as radio1
+[   14.358029] xilinx-video amba_pl@0:vcap_tpg: /amba_pl@0/vcap_tpg/ports/port@0 initialization failed
+[   14.366848] xilinx-video amba_pl@0:vcap_tpg: DMA initialization failed
+[   14.373373] xilinx-video amba_pl@0:vcap_csi: /amba_pl@0/vcap_csi/ports/port@0 initialization failed
+[   14.382329] xilinx-video amba_pl@0:vcap_csi: DMA initialization failed
+[   14.389186] xilinx-csi2rxss a0060000.mipi_csi2_rx_subsystem: failed to get lite_aclk (-517)
+[   14.398364] xilinx-vpss-scaler b0080000.v_proc_ss: xlnx,v-vpss-scaler-2.2 - compatible string is getting deprecated!
+[   14.407592] xilinx-vpss-scaler b0080000.v_proc_ss: failed to get aclk_axis (-517)
+[   14.415187] usbcore: registered new interface driver uvcvideo
+[   14.420733] USB Video Class driver (1.1.1)
+[   14.425189] Bluetooth: HCI UART driver ver 2.3
+[   14.429212] Bluetooth: HCI UART protocol H4 registered
+[   14.434312] Bluetooth: HCI UART protocol BCSP registered
+[   14.439605] Bluetooth: HCI UART protocol LL registered
+[   14.444693] Bluetooth: HCI UART protocol ATH3K registered
+[   14.450066] Bluetooth: HCI UART protocol Three-wire (H5) registered
+[   14.456318] Bluetooth: HCI UART protocol Intel registered
+[   14.461659] Bluetooth: HCI UART protocol QCA registered
+[   14.466858] usbcore: registered new interface driver bcm203x
+[   14.472484] usbcore: registered new interface driver bpa10x
+[   14.478017] usbcore: registered new interface driver bfusb
+[   14.483470] usbcore: registered new interface driver btusb
+[   14.488932] usbcore: registered new interface driver ath3k
+[   14.494453] EDAC MC: ECC not enabled
+[   14.498045] EDAC DEVICE0: Giving out device to module zynqmp-ocm-edac controller zynqmp_ocm: DEV ff960000.memory-controller (INTERRUPT)
+[   14.510391] sdhci: Secure Digital Host Controller Interface driver
+[   14.516142] sdhci: Copyright(c) Pierre Ossman
+[   14.520465] sdhci-pltfm: SDHCI platform and OF driver helper
+[   14.526462] ledtrig-cpu: registered to indicate activity on CPUs
+[   14.532099] zynqmp_firmware_probe Platform Management API v1.1
+[   14.537855] zynqmp_firmware_probe Trustzone version v1.0
+[   14.567904] alg: No test for xilinx-zynqmp-aes (zynqmp-aes)
+[   14.569735] zynqmp_aes zynqmp_aes: AES Successfully Registered
+[   14.569735] 
+[   14.575459] alg: No test for xilinx-keccak-384 (zynqmp-keccak-384)
+[   14.583008] alg: No test for xilinx-zynqmp-rsa (zynqmp-rsa)
+[   14.588431] usbcore: registered new interface driver usbhid
+[   14.592407] usbhid: USB HID core driver
+[   14.598771] fpga_manager fpga0: Xilinx ZynqMP FPGA Manager registered
+[   14.602942] usbcore: registered new interface driver snd-usb-audio
+[   14.609635] pktgen: Packet Generator for packet performance testing. Version: 2.75
+[   14.616803] Initializing XFRM netlink socket
+[   14.620593] NET: Registered protocol family 10
+[   14.625305] Segment Routing with IPv6
+[   14.628669] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[   14.634756] NET: Registered protocol family 17
+[   14.638864] NET: Registered protocol family 15
+[   14.643275] bridge: filtering via arp/ip/ip6tables is no longer available by default. Update your scripts to load br_netfilter if you need this.
+[   14.656151] can: controller area network core (rev 20170425 abi 9)
+[   14.662315] NET: Registered protocol family 29
+[   14.666705] can: raw protocol (rev 20170425)
+[   14.670943] can: broadcast manager protocol (rev 20170425 t)
+[   14.676568] can: netlink gateway (rev 20190810) max_hops=1
+[   14.682090] Bluetooth: RFCOMM TTY layer initialized
+[   14.686864] Bluetooth: RFCOMM socket layer initialized
+[   14.691971] Bluetooth: RFCOMM ver 1.11
+[   14.695688] Bluetooth: BNEP (Ethernet Emulation) ver 1.3
+[   14.700957] Bluetooth: BNEP filters: protocol multicast
+[   14.706147] Bluetooth: BNEP socket layer initialized
+[   14.711076] Bluetooth: HIDP (Human Interface Emulation) ver 1.2
+[   14.716965] Bluetooth: HIDP socket layer initialized
+[   14.722003] 9pnet: Installing 9P2000 support
+[   14.726145] Key type dns_resolver registered
+[   14.730606] registered taskstats version 1
+[   14.734437] Loading compiled-in X.509 certificates
+[   14.739579] Btrfs loaded, crc32c=crc32c-generic
+[   14.752251] ff000000.serial: ttyPS0 at MMIO 0xff000000 (irq = 41, base_baud = 6249999) is a xuartps
+[   14.761266] printk: console [ttyPS0] enabled
+[   14.761266] printk: console [ttyPS0] enabled
+[   14.765561] printk: bootconsole [cdns0] disabled
+[   14.765561] printk: bootconsole [cdns0] disabled
+[   14.774726] of-fpga-region fpga-full: FPGA Region probed
+
+```
+
+> `xilinx-frmbuf` 在 deferred probe 里死循环，占住 `CPU0`，导致 `RCU stall`，看起来像“卡死”. **把内核拖进了一个“无限 deferred-probe + GPIO reset 死循环”**，最终把 `rcu_sched` 卡死了。
+
+目前的 `device-tree` 的 `delete-node`很纠结. 还是再调整`vivado`工程
+
+
+
+### 测试版本3
+
+这次修改是
+
+* 中断系统原设计用的`axi-intr`控制器, 这里也改成一样的
+* 中断号顺序和数量也保持一致. 缺的不能悬空(把`tpg`和`pl_iic1`的填悬空的中断输入)
+* `reset-gpio`改成也用`ps gpio`, 而且进一步的, 序号也保持原设计.
+* 主要器件地址保持原设计. 这里`vpss`也照抄原设计.
+* `ps`接口能抄的也抄(开发板资料里的). 具体就是添加`ps_iic1`和`USB31`的`PHY`, `system-top.dts`这里有点要观察的
+
+然后, `CONFIG_SUBSYSTEM_AUTOCONFIG_DEVICE__TREE=y`且清除自定义, 的情况下产生`device-tree`基本节点.
+
+```bash
+root@petalinux:~# dmesg | grep reset 
+[   14.215244] xlnx-mixer b00c0000.v_mix: No reset gpio info from dts for mixer
+[   14.943564] xilinx-frmbuf b0020000.v_frmbuf_wr: Unable to locate reset property in dt
+[   14.958875] xilinx-frmbuf b0050000.v_frmbuf_wr: Unable to locate reset property in dt
+```
+
+
+
+再然后, 关闭`CONFIG_SUBSYSTEM_AUTOCONFIG_DEVICE__TREE`, 然后再调整`device-tree`的`label`命名等问题.
+
+直接上`dm10`会挂, 从`dm1`逐步打开自定义的文件, 直到`dm6`这样的
+
+```dtd
+/include/ "system-conf.dtsi"
+/ {
+};
+
+/* Define design */
+#define DESIGN_BASE_TRD
+#define PLATFORM_ZIRUI7EV
+
+/* Define configuration */
+#define CONFIG_USE_TPG
+//#define CONFIG_USE_CSI
+#define CONFIG_USE_HDMI_TX
+
+/* Includes */
+#include "base_trd/pl.dtsi"
+#include "base_trd/qos.dtsi"
+
+```
+
+
+
+#### PL全不设置的情况
+
+```dtd
+/include/ "system-conf.dtsi"
+/{
+};
+
+/* Define design */
+//#define PLATFORM_ZIRUI7EV
+//#define DESIGN_BASE_TRD
+
+/* Define configuration */
+// #define CONFIG_USE_TPG
+//#define CONFIG_USE_CSI
+//#define CONFIG_USE_HDMI_TX
+
+/* Includes */
+//#include "base_trd/pl.dtsi"
+```
+
+能进入系统.反正先试试也没啥.
+
+
+
+#### 仅把PL基本路径加进来
+
+```dtd
+/include/ "system-conf.dtsi"
+/{
+};
+
+/* Define design */
+#define PLATFORM_ZIRUI7EV
+#define DESIGN_BASE_TRD
+
+/* Define configuration */
+// #define CONFIG_USE_TPG
+//#define CONFIG_USE_CSI
+//#define CONFIG_USE_HDMI_TX
+
+/* Includes */
+#include "base_trd/pl.dtsi"
+```
+
+
+
+
+
+#### 再加显示路径
+
+```dtd
+/include/ "system-conf.dtsi"
+/{
+};
+
+/* Define design */
+#define PLATFORM_ZIRUI7EV
+#define DESIGN_BASE_TRD
+
+/* Define configuration */
+// #define CONFIG_USE_TPG
+//#define CONFIG_USE_CSI
+#define CONFIG_USE_HDMI_TX
+
+/* Includes */
+#include "base_trd/pl.dtsi"
+```
+
+不能进入`shell`, 这里记录启动信息
+
+```
+Starting kernel ...
+
+[    0.000000] Booting Linux on physical CPU 0x0000000000 [0x410fd034]
+[    0.000000] Linux version 5.4.0-xilinx-v2020.1 (oe-user@oe-host) (gcc version 9.2.0 (GCC)) #1 SMP Thu Jan 29 01:41:21 UTC 2026
+[    0.000000] Machine model: xlnx,zynqmp
+[    0.000000] earlycon: cdns0 at MMIO 0x00000000ff000000 (options '115200n8')
+[    0.000000] printk: bootconsole [cdns0] enabled
+[    0.000000] efi: Getting EFI parameters from FDT:
+[    0.000000] efi: UEFI not found.
+[    0.000000] cma: Reserved 700 MiB at 0x0000000040400000
+[    0.000000] psci: probing for conduit method from DT.
+[    0.000000] psci: PSCIv1.1 detected in firmware.
+[    0.000000] psci: Using standard PSCI v0.2 function IDs
+[    0.000000] psci: MIGRATE_INFO_TYPE not supported.
+[    0.000000] psci: SMC Calling Convention v1.1
+[    0.000000] percpu: Embedded 21 pages/cpu s48856 r8192 d28968 u86016
+[    0.000000] Detected VIPT I-cache on CPU0
+[    0.000000] CPU features: detected: ARM erratum 845719
+[    0.000000] Speculative Store Bypass Disable mitigation not required
+[    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 1031940
+[    0.000000] Kernel command line: earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/ram0 rw earlyprintk uio_pdrv_genirq.of_id=xlnx,generic-uio cma=700M cpuidle.off=1 cpufreq.off=1
+[    0.000000] Dentry cache hash table entries: 524288 (order: 10, 4194304 bytes, linear)
+[    0.000000] Inode-cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)
+[    0.000000] mem auto-init: stack:off, heap alloc:off, heap free:off
+[    0.000000] software IO TLB: mapped [mem 0x7bf00000-0x7ff00000] (64MB)
+[    0.000000] Memory: 3102416K/4193280K available (11580K kernel code, 672K rwdata, 3648K rodata, 704K init, 502K bss, 374064K reserved, 716800K cma-reserved)
+[    0.000000] rcu: Hierarchical RCU implementation.
+[    0.000000] rcu:     RCU event tracing is enabled.
+[    0.000000] rcu:     RCU restricting CPUs from NR_CPUS=8 to nr_cpu_ids=4.
+[    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+[    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=4
+[    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[    0.000000] GIC: Adjusting CPU interface base to 0x00000000f902f000
+[    0.000000] GIC: Using split EOI/Deactivate mode
+[    0.000000] irq-xilinx: /amba/interrupt-controller@a0010000: num_irq=10, sw_irq=0, edge=0x1
+[    0.000000] random: get_random_bytes called from start_kernel+0x2a8/0x42c with crng_init=0
+[    0.000000] arch_timer: cp15 timer(s) running at 100.00MHz (phys).
+[    0.000000] clocksource: arch_sys_counter: mask: 0xffffffffffffff max_cycles: 0x171024e7e0, max_idle_ns: 440795205315 ns
+[    0.000003] sched_clock: 56 bits at 100MHz, resolution 10ns, wraps every 4398046511100ns
+[    0.008368] Console: colour dummy device 80x25
+[    0.012476] Calibrating delay loop (skipped), value calculated using timer frequency.. 200.00 BogoMIPS (lpj=400000)
+[    0.022840] pid_max: default: 32768 minimum: 301
+[    0.027567] Mount-cache hash table entries: 8192 (order: 4, 65536 bytes, linear)
+[    0.034787] Mountpoint-cache hash table entries: 8192 (order: 4, 65536 bytes, linear)
+[    0.043480] ASID allocator initialised with 32768 entries
+[    0.047982] rcu: Hierarchical SRCU implementation.
+[    0.052878] EFI services will not be available.
+[    0.057316] smp: Bringing up secondary CPUs ...
+[    0.062011] Detected VIPT I-cache on CPU1
+[    0.062041] CPU1: Booted secondary processor 0x0000000001 [0x410fd034]
+[    0.062388] Detected VIPT I-cache on CPU2
+[    0.062408] CPU2: Booted secondary processor 0x0000000002 [0x410fd034]
+[    0.062728] Detected VIPT I-cache on CPU3
+[    0.062747] CPU3: Booted secondary processor 0x0000000003 [0x410fd034]
+[    0.062794] smp: Brought up 1 node, 4 CPUs
+[    0.097143] SMP: Total of 4 processors activated.
+[    0.101815] CPU features: detected: 32-bit EL0 Support
+[    0.106919] CPU features: detected: CRC32 instructions
+[    0.112051] CPU: All CPU(s) started at EL2
+[    0.116099] alternatives: patching kernel code
+[    0.121575] devtmpfs: initialized
+[    0.128381] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[    0.133487] futex hash table entries: 1024 (order: 4, 65536 bytes, linear)
+[    0.156570] xor: measuring software checksum speed
+[    0.196421]    8regs     :  2375.000 MB/sec
+[    0.236450]    32regs    :  2725.000 MB/sec
+[    0.276481]    arm64_neon:  2365.000 MB/sec
+[    0.276518] xor: using function: 32regs (2725.000 MB/sec)
+[    0.280386] pinctrl core: initialized pinctrl subsystem
+[    0.286170] NET: Registered protocol family 16
+[    0.291030] DMA: preallocated 256 KiB pool for atomic allocations
+[    0.296060] audit: initializing netlink subsys (disabled)
+[    0.301521] audit: type=2000 audit(0.240:1): state=initialized audit_enabled=0 res=1
+[    0.301957] hw-breakpoint: found 6 breakpoint and 4 watchpoint registers.
+[    0.327980] HugeTLB registered 1.00 GiB page size, pre-allocated 0 pages
+[    0.329029] HugeTLB registered 32.0 MiB page size, pre-allocated 0 pages
+[    0.335699] HugeTLB registered 2.00 MiB page size, pre-allocated 0 pages
+[    0.342368] HugeTLB registered 64.0 KiB page size, pre-allocated 0 pages
+[    1.422605] DRBG: Continuing without Jitter RNG
+[    1.498368] raid6: neonx8   gen()  1544 MB/s
+[    1.566419] raid6: neonx8   xor()  1452 MB/s
+[    1.634488] raid6: neonx4   gen()  1477 MB/s
+[    1.702511] raid6: neonx4   xor()  1419 MB/s
+[    1.770588] raid6: neonx2   gen()  1124 MB/s
+[    1.838613] raid6: neonx2   xor()  1173 MB/s
+[    1.906685] raid6: neonx1   gen()   729 MB/s
+[    1.974717] raid6: neonx1   xor()   880 MB/s
+[    2.042768] raid6: int64x8  gen()  1162 MB/s
+[    2.110791] raid6: int64x8  xor()   756 MB/s
+[    2.178884] raid6: int64x4  gen()   977 MB/s
+[    2.246908] raid6: int64x4  xor()   733 MB/s
+[    2.314922] raid6: int64x2  gen()   676 MB/s
+[    2.382997] raid6: int64x2  xor()   591 MB/s
+[    2.451069] raid6: int64x1  gen()   449 MB/s
+[    2.519091] raid6: int64x1  xor()   449 MB/s
+[    2.519128] raid6: using algorithm neonx8 gen() 1544 MB/s
+[    2.523087] raid6: .... xor() 1452 MB/s, rmw enabled
+[    2.528018] raid6: using neon recovery algorithm
+[    2.532850] iommu: Default domain type: Translated 
+[    2.537650] SCSI subsystem initialized
+[    2.541292] usbcore: registered new interface driver usbfs
+[    2.546640] usbcore: registered new interface driver hub
+[    2.551915] usbcore: registered new device driver usb
+[    2.556950] mc: Linux media interface: v0.10
+[    2.561164] videodev: Linux video capture interface: v2.00
+[    2.566612] pps_core: LinuxPPS API ver. 1 registered
+[    2.571527] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[    2.580622] PTP clock support registered
+[    2.584511] EDAC MC: Ver: 3.0.0
+[    2.587988] zynqmp-ipi-mbox mailbox@ff990400: Registered ZynqMP IPI mbox with TX/RX channels.
+[    2.596264] FPGA manager framework
+[    2.599584] Advanced Linux Sound Architecture Driver Initialized.
+[    2.605773] Bluetooth: Core ver 2.22
+[    2.609083] NET: Registered protocol family 31
+[    2.613481] Bluetooth: HCI device and connection manager initialized
+[    2.619797] Bluetooth: HCI socket layer initialized
+[    2.624640] Bluetooth: L2CAP socket layer initialized
+[    2.629661] Bluetooth: SCO socket layer initialized
+[    2.634874] clocksource: Switched to clocksource arch_sys_counter
+[    2.640644] VFS: Disk quotas dquot_6.6.0
+[    2.644488] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+[    2.655167] NET: Registered protocol family 2
+[    2.655939] tcp_listen_portaddr_hash hash table entries: 2048 (order: 3, 32768 bytes, linear)
+[    2.664131] TCP established hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    2.672156] TCP bind hash table entries: 32768 (order: 7, 524288 bytes, linear)
+[    2.679599] TCP: Hash tables configured (established 32768 bind 32768)
+[    2.685772] UDP hash table entries: 2048 (order: 4, 65536 bytes, linear)
+[    2.692442] UDP-Lite hash table entries: 2048 (order: 4, 65536 bytes, linear)
+[    2.699612] NET: Registered protocol family 1
+[    2.704042] RPC: Registered named UNIX socket transport module.
+[    2.709676] RPC: Registered udp transport module.
+[    2.714342] RPC: Registered tcp transport module.
+[    2.719013] RPC: Registered tcp NFSv4.1 backchannel transport module.
+[    2.725639] PCI: CLS 0 bytes, default 64
+[    2.729404] Trying to unpack rootfs image as initramfs...
+[   14.055520] Freeing initrd memory: 210500K
+[   14.056067] hw perfevents: no interrupt-affinity property for /pmu, guessing.
+[   14.061248] hw perfevents: enabled with armv8_pmuv3 PMU driver, 7 counters available
+[   14.069580] Initialise system trusted keyrings
+[   14.073316] workingset: timestamp_bits=46 max_order=20 bucket_order=0
+[   14.080389] NFS: Registering the id_resolver key type
+[   14.084613] Key type id_resolver registered
+[   14.088754] Key type id_legacy registered
+[   14.092737] nfs4filelayout_init: NFSv4 File Layout Driver Registering...
+[   14.099404] jffs2: version 2.2. (NAND) © 2001-2006 Red Hat, Inc.
+[   14.119952] NET: Registered protocol family 38
+[   14.119994] Key type asymmetric registered
+[   14.122820] Asymmetric key parser 'x509' registered
+[   14.127695] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 247)
+[   14.135023] io scheduler mq-deadline registered
+[   14.139519] io scheduler kyber registered
+[   14.169119] Serial: 8250/16550 driver, 4 ports, IRQ sharing disabled
+[   14.172710] cacheinfo: Unable to detect cache hierarchy for CPU 0
+[   14.179989] brd: module loaded
+[   14.184287] loop: module loaded
+[   14.184930] mtdoops: mtd device (mtddev=name/number) must be supplied
+[   14.189465] libphy: Fixed MDIO Bus: probed
+[   14.193421] tun: Universal TUN/TAP device driver, 1.6
+[   14.197584] CAN device driver interface
+[   14.201999] usbcore: registered new interface driver asix
+[   14.206718] usbcore: registered new interface driver ax88179_178a
+[   14.212754] usbcore: registered new interface driver cdc_ether
+[   14.218547] usbcore: registered new interface driver net1080
+[   14.224170] usbcore: registered new interface driver cdc_subset
+[   14.230052] usbcore: registered new interface driver zaurus
+[   14.235601] usbcore: registered new interface driver cdc_ncm
+[   14.241866] usbcore: registered new interface driver uas
+[   14.246496] usbcore: registered new interface driver usb-storage
+[   14.252956] rtc_zynqmp ffa60000.rtc: registered as rtc0
+[   14.257675] i2c /dev entries driver
+[   14.261461] vivid-000: using single planar format API
+[   14.267655] vivid-000: V4L2 capture device registered as video0
+[   14.272057] vivid-000: V4L2 output device registered as video1
+[   14.277857] vivid-000: V4L2 capture device registered as vbi0, supports raw and sliced VBI
+[   14.286065] vivid-000: V4L2 output device registered as vbi1, supports raw and sliced VBI
+[   14.294196] vivid-000: V4L2 capture device registered as swradio0
+[   14.300257] vivid-000: V4L2 receiver device registered as radio0
+[   14.306218] vivid-000: V4L2 transmitter device registered as radio1
+[   14.313662] usbcore: registered new interface driver uvcvideo
+[   14.318093] USB Video Class driver (1.1.1)
+[   14.322483] Bluetooth: HCI UART driver ver 2.3
+[   14.326572] Bluetooth: HCI UART protocol H4 registered
+[   14.331671] Bluetooth: HCI UART protocol BCSP registered
+[   14.336964] Bluetooth: HCI UART protocol LL registered
+[   14.342051] Bluetooth: HCI UART protocol ATH3K registered
+[   14.347425] Bluetooth: HCI UART protocol Three-wire (H5) registered
+[   14.353674] Bluetooth: HCI UART protocol Intel registered
+[   14.359018] Bluetooth: HCI UART protocol QCA registered
+[   14.364218] usbcore: registered new interface driver bcm203x
+[   14.369842] usbcore: registered new interface driver bpa10x
+[   14.375376] usbcore: registered new interface driver bfusb
+[   14.380825] usbcore: registered new interface driver btusb
+[   14.386288] usbcore: registered new interface driver ath3k
+[   14.391810] EDAC MC: ECC not enabled
+[   14.395383] EDAC DEVICE0: Giving out device to module zynqmp-ocm-edac controller zynqmp_ocm: DEV ff960000.memory-controller (INTERRUPT)
+[   14.407712] sdhci: Secure Digital Host Controller Interface driver
+[   14.413502] sdhci: Copyright(c) Pierre Ossman
+[   14.417824] sdhci-pltfm: SDHCI platform and OF driver helper
+[   14.423752] ledtrig-cpu: registered to indicate activity on CPUs
+[   14.429459] zynqmp_firmware_probe Platform Management API v1.1
+[   14.435219] zynqmp_firmware_probe Trustzone version v1.0
+[   14.464596] alg: No test for xilinx-zynqmp-aes (zynqmp-aes)
+[   14.466435] zynqmp_aes zynqmp_aes: AES Successfully Registered
+[   14.466435] 
+[   14.472116] alg: No test for xilinx-keccak-384 (zynqmp-keccak-384)
+[   14.479666] alg: No test for xilinx-zynqmp-rsa (zynqmp-rsa)
+[   14.485083] usbcore: registered new interface driver usbhid
+[   14.489096] usbhid: USB HID core driver
+[   14.495364] fpga_manager fpga0: Xilinx ZynqMP FPGA Manager registered
+[   14.499581] usbcore: registered new interface driver snd-usb-audio
+[   14.506218] pktgen: Packet Generator for packet performance testing. Version: 2.75
+[   14.513503] Initializing XFRM netlink socket
+[   14.517286] NET: Registered protocol family 10
+[   14.521996] Segment Routing with IPv6
+[   14.525357] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[   14.531451] NET: Registered protocol family 17
+[   14.535557] NET: Registered protocol family 15
+[   14.539970] bridge: filtering via arp/ip/ip6tables is no longer available by default. Update your scripts to load br_netfilter if you need this.
+[   14.552843] can: controller area network core (rev 20170425 abi 9)
+[   14.559008] NET: Registered protocol family 29
+[   14.563398] can: raw protocol (rev 20170425)
+[   14.567634] can: broadcast manager protocol (rev 20170425 t)
+[   14.573260] can: netlink gateway (rev 20190810) max_hops=1
+[   14.578776] Bluetooth: RFCOMM TTY layer initialized
+[   14.583557] Bluetooth: RFCOMM socket layer initialized
+[   14.588662] Bluetooth: RFCOMM ver 1.11
+[   14.592377] Bluetooth: BNEP (Ethernet Emulation) ver 1.3
+[   14.597650] Bluetooth: BNEP filters: protocol multicast
+[   14.602841] Bluetooth: BNEP socket layer initialized
+[   14.607769] Bluetooth: HIDP (Human Interface Emulation) ver 1.2
+[   14.613654] Bluetooth: HIDP socket layer initialized
+[   14.618683] 9pnet: Installing 9P2000 support
+[   14.622839] Key type dns_resolver registered
+[   14.627396] registered taskstats version 1
+[   14.631131] Loading compiled-in X.509 certificates
+[   14.636273] Btrfs loaded, crc32c=crc32c-generic
+[   14.648781] ff000000.serial: ttyPS0 at MMIO 0xff000000 (irq = 41, base_baud = 6249999) is a xuartps
+[   14.657796] printk: console [ttyPS0] enabled
+[   14.657796] printk: console [ttyPS0] enabled
+[   14.662091] printk: bootconsole [cdns0] disabled
+[   14.662091] printk: bootconsole [cdns0] disabled
+[   14.671262] of-fpga-region fpga-full: FPGA Region probed
+[   14.682491] xilinx-zynqmp-dma fd500000.dma: ZynqMP DMA driver Probe success
+[   14.689591] xilinx-zynqmp-dma fd510000.dma: ZynqMP DMA driver Probe success
+[   14.696689] xilinx-zynqmp-dma fd520000.dma: ZynqMP DMA driver Probe success
+[   14.703785] xilinx-zynqmp-dma fd530000.dma: ZynqMP DMA driver Probe success
+[   14.710888] xilinx-zynqmp-dma fd540000.dma: ZynqMP DMA driver Probe success
+[   14.717986] xilinx-zynqmp-dma fd550000.dma: ZynqMP DMA driver Probe success
+[   14.725080] xilinx-zynqmp-dma fd560000.dma: ZynqMP DMA driver Probe success
+[   14.732185] xilinx-zynqmp-dma fd570000.dma: ZynqMP DMA driver Probe success
+[   14.739351] xilinx-zynqmp-dma ffa80000.dma: ZynqMP DMA driver Probe success
+[   14.746449] xilinx-zynqmp-dma ffa90000.dma: ZynqMP DMA driver Probe success
+[   14.753543] xilinx-zynqmp-dma ffaa0000.dma: ZynqMP DMA driver Probe success
+[   14.760643] xilinx-zynqmp-dma ffab0000.dma: ZynqMP DMA driver Probe success
+[   14.767742] xilinx-zynqmp-dma ffac0000.dma: ZynqMP DMA driver Probe success
+[   14.774851] xilinx-zynqmp-dma ffad0000.dma: ZynqMP DMA driver Probe success
+[   14.781953] xilinx-zynqmp-dma ffae0000.dma: ZynqMP DMA driver Probe success
+[   14.789053] xilinx-zynqmp-dma ffaf0000.dma: ZynqMP DMA driver Probe success
+[   14.796187] xlnx-mixer b00c0000.v_mix: vtc bridge property not present
+[   14.802806] xlnx-mixer b00c0000.v_mix: Xilinx Mixer driver probed success
+[   14.809961] spi_master spi0: cannot find modalias for /amba/spi@ff0f0000/flash@0
+[   14.817361] spi_master spi0: Failed to create SPI device for /amba/spi@ff0f0000/flash@0
+[   14.825646] macb ff0e0000.ethernet: Not enabling partial store and forward
+[   14.833024] libphy: MACB_mii_bus: probed
+[   14.839154] Generic PHY ff0e0000.ethernet-ffffffff:07: attached PHY driver [Generic PHY] (mii_bus:phy_addr=ff0e0000.ethernet-ffffffff:07, irq=POLL)
+[   14.852373] macb ff0e0000.ethernet eth0: Cadence GEM rev 0x50070106 at 0xff0e0000 irq 30 (00:0a:35:00:22:01)
+[   14.862626] zynqmp_pll_disable() clock disable failed for apll_int, ret = -13
+[   14.869870] xilinx-axipmon ffa00000.perf-monitor: Probed Xilinx APM
+[   14.876407] xilinx-axipmon fd0b0000.perf-monitor: Probed Xilinx APM
+[   14.882900] xilinx-axipmon fd490000.perf-monitor: Probed Xilinx APM
+[   14.889377] xilinx-axipmon ffa10000.perf-monitor: Probed Xilinx APM
+[   14.896282] dwc3 fe200000.dwc3: Failed to get clk 'ref': -2
+[   14.902057] xilinx-psgtr fd400000.zynqmp_phy: Lane:1 type:0 protocol:3 pll_locked:yes
+[   14.912268] xhci-hcd xhci-hcd.0.auto: xHCI Host Controller
+[   14.917760] xhci-hcd xhci-hcd.0.auto: new USB bus registered, assigned bus number 1
+[   14.925511] xhci-hcd xhci-hcd.0.auto: hcc params 0x0238f625 hci version 0x100 quirks 0x0000000202010810
+[   14.934918] xhci-hcd xhci-hcd.0.auto: irq 48, io mem 0xfe200000
+[   14.941106] usb usb1: New USB device found, idVendor=1d6b, idProduct=0002, bcdDevice= 5.04
+[   14.949365] usb usb1: New USB device strings: Mfr=3, Product=2, SerialNumber=1
+[   14.956586] usb usb1: Product: xHCI Host Controller
+[   14.961459] usb usb1: Manufacturer: Linux 5.4.0-xilinx-v2020.1 xhci-hcd
+[   14.968064] usb usb1: SerialNumber: xhci-hcd.0.auto
+[   14.973203] hub 1-0:1.0: USB hub found
+[   14.976964] hub 1-0:1.0: 1 port detected
+[   14.981052] xhci-hcd xhci-hcd.0.auto: xHCI Host Controller
+[   14.986532] xhci-hcd xhci-hcd.0.auto: new USB bus registered, assigned bus number 2
+[   14.994188] xhci-hcd xhci-hcd.0.auto: Host supports USB 3.0 SuperSpeed
+[   15.000913] usb usb2: New USB device found, idVendor=1d6b, idProduct=0003, bcdDevice= 5.04
+[   15.009176] usb usb2: New USB device strings: Mfr=3, Product=2, SerialNumber=1
+[   15.016396] usb usb2: Product: xHCI Host Controller
+[   15.021264] usb usb2: Manufacturer: Linux 5.4.0-xilinx-v2020.1 xhci-hcd
+[   15.027869] usb usb2: SerialNumber: xhci-hcd.0.auto
+[   15.032969] hub 2-0:1.0: USB hub found
+[   15.036732] hub 2-0:1.0: 1 port detected
+[   15.041275] cdns-i2c ff030000.i2c: 400 kHz mmio ff030000 irq 32
+[   15.047645] idt8t49n24x 2-007c: idt24x_probe
+[   15.135396] idt8t49n24x 2-007c: idt24x_read_from_hw: initial values read from chip successfully
+[   15.144894] idt8t49n24x 2-007c: probe success. input freq: 40000000Hz (XTAL), settings string? true
+[   15.154525] cpufreq-dt cpufreq-dt: failed register driver: -19
+[   15.192017] mmc0: SDHCI controller on ff160000.mmc [ff160000.mmc] using ADMA 64-bit
+[   15.231244] mmc1: SDHCI controller on ff170000.mmc [ff170000.mmc] using ADMA 64-bit
+[   15.241306] rtc_zynqmp ffa60000.rtc: setting system clock to 2026-01-29T07:05:05 UTC (1769670305)
+[   15.250179] of_cfs_init
+[   15.252639] of_cfs_init: OK
+[   15.255559] cfg80211: Loading compiled-in X.509 certificates for regulatory database
+[   15.309468] mmc0: new HS200 MMC card at address 0001
+[   15.314847] mmcblk0: mmc0:0001 8GUF4R 7.28 GiB 
+[   15.319558] mmcblk0boot0: mmc0:0001 8GUF4R partition 1 31.9 MiB
+[   15.325658] mmcblk0boot1: mmc0:0001 8GUF4R partition 2 31.9 MiB
+[   15.331662] mmcblk0rpmb: mmc0:0001 8GUF4R partition 3 4.00 MiB, chardev (245:0)
+[   15.339812]  mmcblk0: p1 p2
+[   15.360843] mmc1: error -110 whilst initialising SD card
+[   15.397765] cfg80211: Loaded X.509 cert 'sforshee: 00b28ddf47aef9cea7'
+[   15.404299] clk: Not disabling unused clocks
+[   15.408565] ALSA device list:
+[   15.411523]   No soundcards found.
+[   15.415205] platform regulatory.0: Direct firmware load for regulatory.db failed with error -2
+[   15.423812] cfg80211: failed to load regulatory.db
+[   15.428780] Freeing unused kernel memory: 704K
+[   15.446906] Run /init as init process
+INIT: version 2.88 booting
+[   15.531390] random: fast init done
+[   15.556707] FAT-fs (mmcblk0p1): Volume was not properly unmounted. Some data may be corrupt. Please run fsck.
+Starting udev
+[   15.601589] udevd[163]: starting version 3.2.8
+[   15.606395] random: udevd: uninitialized urandom read (16 bytes read)
+[   15.612877] random: udevd: uninitialized urandom read (16 bytes read)
+[   15.619337] random: udevd: uninitialized urandom read (16 bytes read)
+[   15.646249] udevd[164]: starting eudev-3.2.8
+[   15.687488] xilinx_vphy: loading out-of-tree module taints kernel.
+[   15.692346] mali: loading out-of-tree module taints kernel.
+[   15.700001] xilinx-vphy a0000000.vphy: probe started
+[   15.707035] dp159 3-005e: probed
+[   15.711296] xilinx-vphy a0000000.vphy: VPhy version : 02.02 (0000)
+[   15.718093] xilinx-vphy a0000000.vphy: probe successful
+[   15.724121] dp159 3-005e: probe successful
+[   15.728925] xlnx-drm-hdmi a0080000.hdmi_txss: probe started
+[   15.734589] xlnx-drm-hdmi a0080000.hdmi_txss: hdmi tx audio disabled in DT
+[   15.744889] xlnx-drm-hdmi a0080000.hdmi_txss: probe successful
+[   15.750887] [drm] Supports vblank timestamp caching Rev 2 (21.10.2013).
+[   15.757520] [drm] No driver support for vblank timestamp query.
+
+```
+
+启动参数给 `xlnx_mixer.mixer_primary_enable=0` 也一样卡在这里
+
+另外`gpt`说要添加启动参数 `init=/bin/sh nomodeset`, 实际上根据没有加`CONFIG_USE_HDMI_TX`的能进`shell`的情况, 大概无关.
+
+这样就只有修改`/project-spec/meta-user/recipes-apps/trd-files/files/autostart.sh`, 全注释掉, 目的是不要自动运行`modetest`之类的命令.  也不行
+
+返回来检查发现启动参数没有变化
+
+```
+[    0.000000] Kernel command line: earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/ram0 rw xlnx_mixer.mixer_primary_enable=0
+```
+
+需要执行 `petalinux-build -c device-tree -x clean` 和 `petalinux-build -c u-boot -x clean` 
+
+
+
+那么再注释掉其余几个脚本, 添加启动参数`init=/bin/sh nomodeset`, 不行
+
+分析结论是
+
+> 现在的系统已经是“可用的 Linux”，只是被 `HDMI DRM` 抢走了前台控制权
+
+
+
+启动参数换成下面这样的
+
+```
+console=ttyPS0,115200 earlycon root=/dev/ram0 rw init=/bin/sh \
+fbcon=map:off modprobe.blacklist=xlnx_drm,xlnx_drm_hdmi
+```
+
+可以在 `uboot`给出
+
+```
+setenv bootargs 'console=ttyPS0,115200 earlycon fbcon=map:off modprobe.blacklist=xlnx_drm,xlnx_drm_hdmi'
+```
+
+也不行, 还是卡在`drm`
+
+> `xlnx_drm` 是 **built-in (=y)** ,那么`modprobe.blacklist`完全无效
+
+再审查设备树, 发现`vphy`的参考时钟还没有配置对. 改了之后试试看
+
+```diff
+ 		xlnx,rx-pll-selection = <0x0>;
+ 		xlnx,rx-protocol = <0x1>;
+-		xlnx,rx-refclk-sel = <0x1>;
++		xlnx,rx-refclk-sel = <0x0>;
+ 		xlnx,tx-no-of-channels = <0x3>;
+ 		xlnx,tx-pll-selection = <0x6>;
+ 		xlnx,tx-protocol = <0x1>;
+-		xlnx,tx-refclk-sel = <0x0>;
++		xlnx,tx-refclk-sel = <0x1>;
+ 		xlnx,hdmi-fast-switch = <0x1>;
+```
+
+我艹! 还不行.
+
+那么打开`CONFIG_SUBSYSTEM_AUTOCONFIG_DEVICE__TREE`, 补`reset-gpio`和`endpoint`. 这样再试试.
+
+这里启动过程报`clock provider`错误, 用`clocks = <&zynqmp_clk 74>;`或者套一层定义的`axi_stream_clk`, 都一样
+
+```
+[   14.159050] xilinx-frmbuf b0020000.v_frmbuf_wr: failed to get ap_clk (-517)
+[   14.163985] xilinx-frmbuf b0050000.v_frmbuf_wr: failed to get ap_clk (-517)
+[   14.194344] Serial: 8250/16550 driver, 4 ports, IRQ sharing disabled
+[   14.198334] xlnx,csc-bridge b0060000.v_proc_ss: failed to get aclk -517
+[   14.201773] xlnx,scaler-bridge b0080000.v_proc_ss: failed to get axi lite clk -517
+[   14.209156] xlnx,scaler-bridge b0080000.v_proc_ss: parse_of failed
+
+[   14.358029] xilinx-video amba_pl@0:vcap_tpg: /amba_pl@0/vcap_tpg/ports/port@0 initialization failed
+[   14.366848] xilinx-video amba_pl@0:vcap_tpg: DMA initialization failed
+[   14.373373] xilinx-video amba_pl@0:vcap_csi: /amba_pl@0/vcap_csi/ports/port@0 initialization failed
+[   14.382329] xilinx-video amba_pl@0:vcap_csi: DMA initialization failed
+[   14.389186] xilinx-csi2rxss a0060000.mipi_csi2_rx_subsystem: failed to get lite_aclk (-517)
+[   14.398364] xilinx-vpss-scaler b0080000.v_proc_ss: xlnx,v-vpss-scaler-2.2 - compatible string is getting deprecated!
+[   14.407592] xilinx-vpss-scaler b0080000.v_proc_ss: failed to get aclk_axis (-517)
+
+```
+
+到这里, 基本和测试版本2差不多了
+
+
+
+### tips: 没有产生`boot.scr`的问题处理
+
+简单修改`project-spec/configs/rootfs_config`和`project-spec/configs/config`没有效果.
+
+两个办法, 一个是编译`zcu102 base_trd`看有没有, 另一个是不添加任何`project-spec`的东西, 导入`xsa`就直接编译出一个镜像看有没有`boot.scr`
+
+* 导入`xsa`就直接编译镜像有`boot.scr`
+
+  **从这个版本逐渐添加修改**
+
+  
+
+* 编译`zcu102 base_trd`(`zcu102-base-dm1.dtsi`)也有`boot.scr`
+
+  处理个小问题
+
+  ```bash
+  ERROR: Fetcher failure for URL: 'git://anongit.freedesktop.org/gstreamer/common;destsuffix=git/common;name=common'. Unable to fetch URL from any source.
+  ```
+
+  找找在哪定义的
+
+  ```bash
+  $ find ./components/yocto -name "*plugins-good*" | xargs grep "freedesktop"
+  ```
+
+  改 recipe
+
+  ```bash
+  $ cp -r components/yocto/layers/meta-petalinux/recipes-multimedia/gstreamer \
+     project-spec/meta-user/recipes-multimedia/
+  ```
+
+  修改 `project-spec/meta-user/recipes-multimedia/gstreamer1.0-plugins-good_%.bbappend`
+
+  ```bash
+  git://anongit.freedesktop.org/gstreamer/common;destsuffix=git/common;name=common \
+  >>
+  git://gitlab.freedesktop.org/gstreamer/common.git;protocol=https;name=common \
+  ```
+
+  
+### 还是找找前面两个失效信息的原因
+
+#### 仿`base_trd`的`dt`的失效定位
+
+其实, 仿`base_trd`的`dt`, 经过逐步对比, 发现`project-spec/meta-user/recipes-core/packagegroups/packagegroup-trd.bb`的`kernel-module-hdmi`的选择是导致不能启动的原因.
+
+但又必须要选才能用, 那么估计是要修改`drm`和`mixer`有关内核源码. 根据之前怀疑的
+
+参照`rdf0428-zcu106-vcu-trd-2018-3/apu/vcu_petalinux_bsp/xilinx-vcu-trd-zcu106-v2018.3-final/project-spec/meta-user/recipes-kernel/linux/linux-xlnx/0005-drm-xlnx_mixer-Dont-enable-primary-plane-by-default.patch`, 在内核源码层面`disable`掉`mix_primary`
+
+* 修改内核源码(2020.1)
+
+   在 `PetaLinux 2020.1`：
+
+  > `devshell` = 看源码
+  > `bbappend + patch` = 改源码
+  
+  `ug1144`会提供当前版本的`Creating and Adding Patches for Software Components within a PetaLinux Project`章节描述.  参考下面几个命令
+  
+  ```
+  petalinux-build -c <recipe-name> -x modify == petalinux-config -c <recipe-name> -x modify
+  git add <filename>
+  git commit -s
+  petalinux-build -c <recipe-name> -x finish
+  petalinux-build -c <recipe-name> -x update-recipe
+  devtool reset <recipe-name>
+  ```
+  
+  有的`recipe`的`bb`文件没有暴露 `modify`, 实际上可以进入`devshell`查看. 修改之后导出`patch`, 之后再实际添加.
+  
+  
+  
+  比如解开`kernel-module-hdmi`的源码
+  
+  ```bash
+  petalinux-build -c kernel-module-hdmi -x devshell
+  ```
+  
+  源码就在`petalinux/build/tmp/work/zynqmp-xilinx-linux/kernel-module-hdmi/5.4.0-r0/git`. 留着后面再搜索
+  
+  
+  
+  解开内核源码
+  
+  ```bash
+  petalinux-build -c kernel -x devshell
+  ```
+  
+  `petalinux/build/tmp/work-shared/zynqmp-generic/kernel-source/drivers/gpu/drm/xlnx/xlnx_mixer.c`
+  
+  ```diff
+   	DRM_FORMAT_XV20,
+   };
+   
+  +static bool xlnx_mixer_primary_enable = false;
+  +module_param_named(mixer_primary_enable, xlnx_mixer_primary_enable, bool, 0600);
+  +MODULE_PARM_DESC(mixer_primary_enable, "Enable mixer primary plane (default: 0)");
+  +
+  +
+   /*********************** Inline Functions/Macros *****************************/
+   #define to_mixer_hw(p) (&((p)->mixer->mixer_hw))
+   #define to_xlnx_crtc(x)	container_of(x, struct xlnx_crtc, crtc)
+   
+   
+    	 * may be written to otherwise inactive layers in lieu of, eventually,
+   	 * turning them on.
+   	 */
+  +
+  +	if (id == 0) {
+  +		if (!xlnx_mixer_primary_enable)
+  +		return;
+  +	}
+   	layer_data = xlnx_mix_get_layer_data(mixer, id);
+   	if (!layer_data) {
+   		DRM_ERROR("Invalid layer id %d\n", id);
+  ```
+  
+  
+  
+  修改完毕之后退出 `devshell`命令是`exit`, 然后
+
+  ```bash
+  petalinux-build -c kernel
+  petalinux-build
+  ```
+  
+  还`TM`在
+
+  ```bash
+  [   15.781247] [drm] Supports vblank timestamp caching Rev 2 (21.10.2013).
+  [   15.787875] [drm] No driver support for vblank timestamp query.
+  ```
+  
+  搜索`grep -R "vblank timestamp"`, 最后打印的信息在这个文件
+  
+  ```bash
+  drm_vblank.c:		DRM_INFO("No driver support for vblank timestamp query.\n");
+  ```
+  
+  即`petalinux/build/tmp/work-shared/zynqmp-generic/kernel-source/drivers/gpu/drm/drm_vblank.c`, 看起来也就是`drm_vblank_init()`, 既然都打印这个信息了, 返回也就是0了. 现在还是没辙.
+  
+  从报错信息看, 类似于下面这个连接的
+  
+  <https://adaptivesupport.amd.com/s/question/0D52E00006iHjRZSA0/vblank-wait-timed-out-due-to-xilinx-dma-driver?language=en_US>
+  
+  
+  
+  
+  
+  确认看看修改生效了没有
+  
+  比如简单修改
+  
+  ```bash
+  drm_vblank.c:		DRM_INFO("No driver support for vblank timestamp query. Mark!\n");
+  ```
+  
+  没有生效. Why?  `work-shared`目录的是仅观看不是真正的工作副本, 修改了也不起作用, 但是可以制作`patch`
+  
+  ```bash
+  git diff > 0001-drm-vblank-mark.patch
+  ```
+  
+  放到
+  
+  ```bash
+  project-spec/meta-user/recipes-kernel/linux/linux-xlnx/
+  ├── linux-xlnx_%.bbappend
+  └── files/
+      └── 0001-drm-vblank-mark.patch
+  
+  ```
+  
+  `bbappend `内容
+  
+  ```bash
+  FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
+  
+  SRC_URI += "file://0001-drm-vblank-mark.patch"
+  
+  ```
+  
+  ```bash
+  SRC_URI += "file://bsp.cfg"
+  
+  SRC_URI_append = " \
+  	file://0001-drm-vblank-mark.patch \
+  "
+  
+  KERNEL_FEATURES_append = " bsp.cfg"
+  FILESEXTRAPATHS_prepend := "${THISDIR}/${PN}:"
+  
+  ```
+  
+  编译
+  
+  ```bash
+  petalinux-build -c kernel -x cleansstate
+  petalinux-build
+  
+  ```
+  
+  
+  
+  到最后, 如果再开一路比如`vcap-tpg`, 就也会有时钟`-517`错误. 必须探究是怎么来的
+
+
+
+
+
+#### 为啥`dt`老是时钟有`-517`错误
+
+方法是关自动产生`dt`,一个一个节点撸. 
+
+其实, 是`frame_wr`的路径存在问题. 
+
+
+
+#### tips: 反汇编`dtb`
+
+```
+dtc -I dtb -O dts -@ -o system.dts system.dtb
+
+grep -R "b0050000" system.dts
+grep -R "ap_clk" system.dts
+grep -R "zynqmp_clk" system.dts
+
+
+dtc -I dts -O dtb -o new.dtb system.dts
+```
+
+
+
+那么什么是`-517`错误?
+
+> 不是 `clk ID` 错，也不是 `DT` 写错
+>  而是：`zynqmp_clk` 在 `frmbuf probe` 的时候“还没 `ready`”
+>
+> ### `zynqmp_clk` 本身是 **firmware clock provider**
+>
+> - 由 **ZynqMP PMU / firmware** 提供
+> - 注册时间 **很晚**
+> - 而 `xilinx-frmbuf` probe 很早
+>
+> 👉 **完全可能：frmbuf 先 probe，clock 还没出来**
+
+解决办法（✅ 推荐）
+
+>  PS → clk_wiz → PL IP
+
+那么再制作一个`vivado`版本
+
+
+
+### 测试版本4
+
+这次修改是
+
+* `ps clk` -> `clk_wiz` -> `ap_clk`
+
+
+
+
+
+
+
+
+
+
+### 放弃`port base_trd to P11`之后的归档
+
+这周结束还不行就放弃模仿`zcu102 base_trd`. 
+
+`port_p11_base_trd_test2_tmp.git.tar.bz2`: 临时的`repo`, `master repo`里包含了这个. 这里只是存档一个.
+
+`port_p11_base_trd_master.git.tar.bz2`: 前面的测试1~测试3都在这里, 是`port base_trd to P11`的`master repo`.
+
+
+
+### 总结
+
+目的是迁移(`port`)`xilinx`提供的参考设计`base_trd`到`P11`开发板. 
+
+测试版本2的情况是几个实验的最好的情况, 链路`IP`从启动信息看都配置好了, 只是`drm`层面挂了.
+
+测试版本1和测试版本3都属于共同的现象,   时钟的`-517`错误表示在 `probe` 时根本还没 `ready`.
+
+已经做了一些尝试都不能解决.
+
+
+
+
+
+
+
+
+
+***
+
+## 仿照`zcu106 vcu_trd`添加 `VCU`的`vcu_trd`工程
+
+`zcu106 vcu_trd` 基本都是围绕 `VCU` 来配置`input.cfg`,进而使用`vcu_gst_app`
+
+### 测试1
+
+实际工程和原工程的主要区别是
+
+* 去掉了`hdmi-rx`
+* 简化了 `csi-rx`路径
+* 取消原设计`vphy`的`dru-clk`
+* 地址分布尽量少变化
 
