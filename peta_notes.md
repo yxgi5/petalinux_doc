@@ -42,19 +42,25 @@ petalinux是工作目录
 
 ```bash
 cd petalinux/
-petalinux-config --get-hw-description ../hardware/
+petalinux-config --get-hw-description ../vivado/xsa/
 ```
 
-更新 xsa 文件后，需要这样
+如果不想修改`project-spec/configs/config`, 也可以跳过`menuconfig`
+
+```bash
+petalinux-config --silentconfig --get-hw-description=../vivado/xsa/
+```
+
+更新 `xsa` 文件后，需要这样
 
 ```bash
 petalinux-build -x mrproper
 petalinux-build
 ```
-避免旧缓存导致 DTS 不更新的问题
+避免旧缓存导致 `DTS` 不更新的问题
 
 
-## 配置本地 sstate 和 downloads 目录
+## 配置本地 `sstate` 和 `downloads` 目录
 
 ```bash
 petalinux-config
@@ -176,7 +182,7 @@ BOOT.BIN
 image.ub
 ```
 
-## 产生sdk
+## 产生`sdk`
 ```bash
 petalinux-build --sdk
 ```
@@ -184,6 +190,84 @@ petalinux-build --sdk
 ```bash
 build/tmp/deploy/sdk
 ```
+
+
+
+## 产生`BSP`文件
+
+`PetaLinux BSP` 是什么?  本质是一个 **`tar.gz`**，里面包含：
+
+- 硬件描述（`XSA`）:	`project-spec/hw-description/`
+- `PetaLinux` 配置:  	`project-spec/configs/config`, `project-spec/configs/rootfs_config`
+- `Yocto layer / recipe` 的改动:   	`project-spec/meta-user/`
+- 可选的预构建产物（一般不带）
+- 可选的源码快照
+- `BSP` 元信息:     `bsp.conf`, `README`等
+
+BSP 是怎么“做”出来的?
+
+* 准备一个“干净可用”的工程
+
+  ```bash
+  petalinux-create -t project -n my_board
+  cd my_board
+  ```
+
+* 导入硬件
+
+  ```bash
+  petalinux-config --get-hw-description=path/to/xsa
+  ```
+
+* 配置系统
+
+  ```bash
+  petalinux-config
+  petalinux-config -c rootfs
+  ```
+
+* 做所有定制
+
+  这一阶段是 `BSP` 的“核心价值”, 比如：
+
+  - 改设备树（meta-user）
+  - 加驱动
+  - 改 kernel config
+  - 改 rootfs 包
+  - 加应用
+
+* 完整编译一次
+
+  ```bash
+  petalinux-build
+  ```
+
+  不 `build` 也能制作 `BSP`，但容易埋坑
+
+* 打包 `BSP`
+
+  ```bash
+  petalinux-package --bsp
+  
+  # 可以指定名字
+  petalinux-package --bsp --output my_board_2022_2.bsp
+  ```
+
+  
+
+怎么用 `BSP `?
+
+* 确保`petalinux`版本和产生`BSP`的一致
+
+* 导入`BSP`
+
+  ```bash
+  petalinux-create -t project -s xxx.bsp
+  cd xxx
+  petalinux-build
+  ```
+
+* `BSP`不等于 build 产物, 是“能复现、能交付、能协作”的最小单位, 一块板子对应一个 `BSP`
 
 
 
@@ -1604,6 +1688,8 @@ petalinux/components/yocto/workspace/sources/linux-xlnx/drivers/clk/idt/clk-idt8
 也可以在
 
 <https://github.com/Xilinx/linux-xlnx/tree/xlnx_rebase_v5.15_LTS >找对应的文件查看
+
+`ug1144`会提供当前版本的`Creating and Adding Patches for Software Components within a PetaLinux Project`章节描述.
 
 
 
@@ -3377,7 +3463,7 @@ modetest -M xlnx \
   -s 41@39:3840x2160-60@BG24 \
   -P 38@39:3840x2160+0+0@BG24
   
-modetest -D a0050000.v_mix -s 41:3840x2160-60@BG24
+modetest -D a0050000.v_mix -s 41@39:3840x2160-60@BG24
 ```
 
 这里仅显示蓝色背景, 没有什么其他图案
@@ -3421,6 +3507,57 @@ MODULE_PARM_DESC(mixer_primary_enable, "Enable mixer primary plane (default: 1)"
 而 `dp-txss`有 `xlnx,vtc-offset`属性, 应该不会出现这样的问题.
 
 <https://github.com/Xilinx/linux-xlnx/blob/xlnx_rebase_v5.15_LTS/Documentation/devicetree/bindings/display/xlnx/xlnx%2Cdp-tx.yaml>
+
+
+
+#### 修改内核代码
+
+```bash
+petalinux-devtool modify linux-xlnx
+
+vim components/yocto/workspace/sources/linux-xlnx/drivers/gpu/drm/xlnx/xlnx_mixer.c
+
+cd components/yocto/workspace/sources/linux-xlnx/
+git add .
+git commit -m "update: set xlnx_mixer_primary_enable to false"
+cd -
+
+petalinux-devtool finish linux-xlnx	${PWD}/project-spec/meta-user
+
+petalinux-devtool status		
+# 如果 No recipes currently in your workspace
+rm -rf components/yocto/workspace/sources/linux-xlnx
+# or 
+# petalinux-devtool update-recipe linux-xlnx -a ${PWD}/project-spec/meta-user
+# +
+# petalinux-devtool reset linux-xlnx
+
+# if needed
+petalinux-build -x mrproper
+petalinux-build
+
+```
+
+```diff
+diff --git a/drivers/gpu/drm/xlnx/xlnx_mixer.c b/drivers/gpu/drm/xlnx/xlnx_mixer.c
+index f7549f917603..8c4e159be42e 100644
+--- a/drivers/gpu/drm/xlnx/xlnx_mixer.c
++++ b/drivers/gpu/drm/xlnx/xlnx_mixer.c
+@@ -242,9 +242,9 @@ static const u32 color_table[] = {
+ 	DRM_FORMAT_XV20,
+ };
+ 
+-static bool xlnx_mixer_primary_enable = true;
++static bool xlnx_mixer_primary_enable = false;
+ module_param_named(mixer_primary_enable, xlnx_mixer_primary_enable, bool, 0600);
+-MODULE_PARM_DESC(mixer_primary_enable, "Enable mixer primary plane (default: 1)");
++MODULE_PARM_DESC(mixer_primary_enable, "Enable mixer primary plane (default: 0)");
+ 
+ /*********************** Inline Functions/Macros *****************************/
+ #define to_mixer_hw(p) (&((p)->mixer->mixer_hw))
+```
+
+
 
 
 
@@ -4987,13 +5124,13 @@ dtc -I dts -O dtb -o new.dtb system.dts
 > - 注册时间 **很晚**
 > - 而 `xilinx-frmbuf` probe 很早
 >
-> 👉 **完全可能：frmbuf 先 probe，clock 还没出来**
+> **完全可能：frmbuf 先 probe，clock 还没出来**
 
-解决办法（✅ 推荐）
+解决办法
 
 >  PS → clk_wiz → PL IP
 
-那么再制作一个`vivado`版本
+那么再制作一个`vivado`版本.  [经过测试版本4的试验, 上面的改变也是不行的]
 
 
 
@@ -5003,16 +5140,135 @@ dtc -I dts -O dtb -o new.dtb system.dts
 
 * `ps clk` -> `clk_wiz` -> `ap_clk`
 
+还是不行, 依然报`-517`
+
+```
+fb_wr_tpg { status = "disabled"; };
+tpg_1     { status = "disabled"; };
+vcap_tpg  { status = "disabled"; };
+```
+
+能启动到shell(如果实在不行就关闭`kernel-module-hdmi`), 看`cat /sys/kernel/debug/clk/clk_summary`几个始终也存在的
+
+
+
+```
+fb_wr_tpg { status = "okay";};
+tpg_1 { status = "disabled"; };
+vcap_tpg { status = "disabled"; };
+```
+
+报`-517`
+
+
+
+```
+dmesg | grep -i fpga
+```
+
+bit文件加载了
+
+
+
+```
+ls /lib/firmware
+```
+
+确实没有看到`.bit`文件
+
+```
+root@petalinux:~# cat /sys/kernel/debug/clk/clk_summary | grep wiz
+root@petalinux:~# dmesg | grep -i fpga
+[    2.588242] FPGA manager framework
+[   14.482767] fpga_manager fpga0: Xilinx ZynqMP FPGA Manager registered
+[   14.658583] of-fpga-region fpga-full: FPGA Region probed
+[   16.883288] [drm] FPGA programming device pcap founded.
+[   19.846786] [drm] FPGA programming device pcap founded.
+root@petalinux:~# find /proc/device-tree -name "*wiz*"
+root@petalinux:~# ls /lib/firmware
+al5d.fw  al5d_b.fw  al5e.fw  al5e_b.fw
+root@petalinux:~# 
+```
+
+
+
+```
+of-fpga-region fpga-full: FPGA Region probed
+[drm] FPGA programming device pcap founded
+
+```
+
+但是`demsg`里显示`FPGA Region probed`
+
+```
+$ strings image.ub | grep clkwiz clkwiz
+```
+
+`image.ub` 里只有节点字符串 `clkwiz`
+
+```
+root@petalinux:~# ls /proc/device-tree | grep -i clock
+root@petalinux:~# grep -R "clocking-wizard" /proc/device-tree
+Binary file /proc/device-tree/amba/clock-generator@a0030000/compatible matches
+root@petalinux:~# ls /sys/bus/platform/drivers/clk-wizard/
+a0030000.clock-generator  bind  uevent  unbind
+```
+
+我观察到`cat /sys/kernel/debug/clk/clk_summary`里有
+
+```
+                      pl0_ref_mux       1        1        0   399999996          0     0  50000
+                         pl0_ref_div1       1        1        0    99999999          0     0  50000
+                            pl0_ref_div2       1        1        0    99999999          0     0  50000
+                               pl0_ref       4        4        0    99999999          0     0  50000
+                                  a0030000.clock-generator_mul       1        1        0 11137499888          0     0  50000
+                                     a0030000.clock-generator_mul_div       1        1        0  1113749989          0     0  50000
+                                        clk_out1        1        1        0   296999997          0     0  50000
+                                        clk_out2        0        0        0  1113749989          0     0  50000
+                                        clk_out3        0        0        0  1113749989          0     0  50000
+                                        clk_out4        0        0        0  1113749989          0     0  50000
+                                        clk_out5        0        0        0  1113749989          0     0  50000
+                                        clk_out6        0        0        0  1113749989          0     0  50000
+                                        clk_out7        0        0        0  1113749989          0     0  50000
+                                  axi_lite_clk       7        9        0    99999999          0     0  50000
+                                  axi_dphy_clk       0        0        0   199999998          0     0  50000
+                                  axi_stream_clk       5        5        0   299999997          0     0  50000
+```
+
+
+
+`clkwiz`直接作为`clock provider`, 也一样`fail`
+
+```
+	clkwiz1: clk_wiz_1 {
+		compatible = "xlnx,clocking-wizard";
+		#clock-cells = <1>;
+
+		/* 输入时钟：来自 PS */
+		clocks = <&zynqmp_clk 71>;
+		clock-names = "clk_in1";
+
+		/* 输出时钟名称，顺序 = Vivado 里 clk_out 顺序 */
+		clock-output-names = 
+			"clk_50m",   /* 0 */
+			"clk_75m",   /* 1 */
+			"clk_150m",  /* 2 */
+			"clk_300m",  /* 3 */
+			"clk_200m",  /* 4 */
+			"clk_100m";  /* 5 */
+	};
+
+然后类似这样更换
+-		clocks = <&axi_lite_clk>;
++		// clocks = <&axi_lite_clk>;
++		clocks = <&clkwiz1 5>;
+```
 
 
 
 
 
-
-
-
-
-### 放弃`port base_trd to P11`之后的归档
+### 当前归档
 
 这周结束还不行就放弃模仿`zcu102 base_trd`. 
 
@@ -5020,17 +5276,685 @@ dtc -I dts -O dtb -o new.dtb system.dts
 
 `port_p11_base_trd_master.git.tar.bz2`: 前面的测试1~测试3都在这里, 是`port base_trd to P11`的`master repo`.
 
+`base_trd_port.git.tar.bz2`: 测试4
 
 
-### 总结
+
+### 当前总结
 
 目的是迁移(`port`)`xilinx`提供的参考设计`base_trd`到`P11`开发板. 
 
-测试版本2的情况是几个实验的最好的情况, 链路`IP`从启动信息看都配置好了, 只是`drm`层面挂了.
+测试版本2的情况是几个实验的最好的情况, 链路`IP`从启动信息看都配置好了, 只是`drm`层面挂了. 如果开`tpg+frwr`其实和测试版本3现象就一样了(`-517`错误).
 
 测试版本1和测试版本3都属于共同的现象,   时钟的`-517`错误表示在 `probe` 时根本还没 `ready`.
 
-已经做了一些尝试都不能解决.
+测试版本4继续做一些尝试都不能解决`-517`错误.
+
+
+
+
+
+### 处理`GPIO deferred`问题
+
+从`vcu_trd`的`dt`找到点灵感, 再尝试
+
+```dtd
+	axi_stream_clk: axi_stream_clk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <300000000>;
+	};
+
+	axi_dphy_clk: axi_dphy_clk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <200000000>;
+	};
+
+	axi_lite_clk: axi_lite_clk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <100000000>;
+	};
+
+```
+
+这样产生新的问题
+
+```
+[   14.141538] xilinx-frmbuf b0050000.fb_wr: Probe deferred due to GPIO reset defer
+
+[   14.414149] xilinx-video amba:vcap_tpg: /amba/vcap_tpg/ports/port@0 initialization failed
+[   14.422112] xilinx-video amba:vcap_tpg: DMA initialization failed
+
+```
+
+看起来不报`-517`错误了, 是一个进展. 但是现在是 `gpio reset`出问题了
+
+```
+	fb_wr_tpg: fb_wr@b0050000 {
+		reg = <0x0 0xb0050000 0x0 0x10000>;
+		compatible = "xlnx,axi-frmbuf-wr-v2.1";
+		#dma-cells = <1>;
+		clock-names = "ap_clk";
+		clocks = <&axi_stream_clk>;
+		interrupt-names = "interrupt";
+		interrupt-parent = <&axi_intc>;
+		interrupts = <0 2>;
+		xlnx,vid-formats = "yuyv", "uyvy", "y8";
+		reset-gpios = <&gpio 81 1>;
+		xlnx,dma-addr-width = <32>;
+		xlnx,pixels-per-clock = <2>;
+		xlnx,max-width = <3840>;
+		xlnx,max-height = <2160>;
+		xlnx,dma-align = <32>;
+		xlnx,s-axi-ctrl-addr-width = <0x7>;
+		xlnx,s-axi-ctrl-data-width = <0x20>;
+		xlnx,video-width = <8>;
+	};
+```
+
+这里`reset-gpios = <&gpio 81 1>;`确实是和`vivado`定义的`emio3`一致的.  `GPT`分析问题在于:
+
+> `frmbuf` 在 probe 时，拿不到 `reset-gpios` 对应的 `GPIO controller`
+>
+> 关键问题不是 “81 对不对”，而是：
+>
+> 这个 `GPIO controller `在 `frmbuf probe` 时“是否已经 `ready`”
+
+### 
+
+先关闭`fb_wr_tpg: fb_wr@b0050000`的`reset-gpios`. 挂了.
+
+```
+[   14.158991] xilinx-frmbuf b0050000.fb_wr: Unable to locate reset property in dt
+[   14.164413] xilinx-frmbuf: probe of b0050000.fb_wr failed with error -2
+
+[   14.437964] xilinx-video amba:vcap_tpg: /amba/vcap_tpg/ports/port@0 initialization failed
+[   14.445925] xilinx-video amba:vcap_tpg: DMA initialization failed
+
+[   55.946847] rcu: INFO: rcu_sched detected stalls on CPUs/tasks:
+[   55.952761] rcu:     0-...0: (10 ticks this GP) idle=fba/1/0x4000000000000000 softirq=8327/8328 fqs=2614 
+[   55.962054]  (detected by 1, t=5255 jiffies, g=3645, q=1)
+[   55.967434] Task dump for CPU 0:
+[   55.970646] kworker/0:1     R  running task        0    38      2 0x0000000a
+[   55.977694] Workqueue: events deferred_probe_work_func
+[   55.982815] Call trace:
+[   55.985249]  __switch_to+0x1c4/0x288
+[   55.988813]  0x0
+[  118.970846] rcu: INFO: rcu_sched detected stalls on CPUs/tasks:
+[  118.976756] rcu:     0-...0: (10 ticks this GP) idle=fba/1/0x4000000000000000 softirq=8327/8328 fqs=10491 
+[  118.986136]  (detected by 1, t=21011 jiffies, g=3645, q=1)
+[  118.991603] Task dump for CPU 0:
+[  118.994815] kworker/0:1     R  running task        0    38      2 0x0000000a
+[  119.001857] Workqueue: events deferred_probe_work_func
+[  119.006983] Call trace:
+[  119.009417]  __switch_to+0x1c4/0x288
+[  119.012973]  0x0
+
+```
+
+类似于<https://adaptivesupport.amd.com/s/question/0D52E00006hpmhsSAA/frame-buffer-probe-fail?language=en_US>
+
+> `frmbuf-wr` 驱动 100% 需要 `reset-gpios`属性，但 `gpio provider` 在 `probe` 时不可用
+
+在`components/plnx_workspace/device-tree/device-tree/pcw.dtsi`有
+```
+grep -R -A 10 -B 10 "ff0a0000"
+grep -R -A 10 -B 10 "&gpio"
+
+&gpio {
+	emio-gpio-width = <32>;
+	gpio-mask-high = <0x0>;
+	gpio-mask-low = <0x5600>;
+	status = "okay";
+};
+```
+
+在components/plnx_workspace/device-tree/device-tree/zynqmp-clk-ccf.dtsi有
+```
+&gpio {
+	clocks = <&zynqmp_clk LPD_LSBUS>;
+};
+```
+
+`components/plnx_workspace/device-tree/device-tree/zynqmp.dtsi`有
+
+```
+		gpio: gpio@ff0a0000 {
+			compatible = "xlnx,zynqmp-gpio-1.0";
+			status = "disabled";
+			#gpio-cells = <0x2>;
+			gpio-controller;
+			interrupt-parent = <&gic>;
+			interrupts = <0 16 4>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			reg = <0x0 0xff0a0000 0x0 0x1000>;
+			power-domains = <&zynqmp_firmware PD_GPIO>;
+		};
+```
+
+那么为啥还出问题呢?
+
+
+
+为了进入shell查看`cat /sys/kernel/debug/gpio | grep 81`
+
+```
+ls /sys/bus/platform/drivers/zynqmp_gpio
+ls /sys/bus/platform/devices | grep gpio
+cat /sys/kernel/debug/gpio
+ls /proc/device-tree | grep gpio
+ls /proc/device-tree/amba | grep gpio
+cat /proc/device-tree/gpio@ff0a0000/status
+```
+
+还是保留`reset-gpios`属性, 但是给`fb_wr_tpg`和`vcap_tpg`的`status = "disabled";`
+
+```
+[   38.630711] rcu: INFO: rcu_sched detected stalls on CPUs/tasks:
+[   38.636619] rcu:     1-...0: (4 ticks this GP) idle=ff2/1/0x4000000000000000 softirq=9162/9163 fqs=202 
+[   38.645738]  (detected by 0, t=5255 jiffies, g=2917, q=28)
+[   38.651205] Task dump for CPU 1:
+[   38.654417] kworker/1:0     R  running task        0    16      2 0x0000000a
+[   38.661464] Workqueue: events deferred_probe_work_func
+[   38.666586] Call trace:
+[   38.669020]  __switch_to+0x1c4/0x288
+[   38.672584]  0x0
+
+```
+
+不行. 那么把`tpg`啥的都`disabled`, 总能进系统
+
+
+
+我打算在`system-user.dtsi`加上试试看
+```
+&gpio {
+    emio-gpio-width = <32>;
+    gpio-mask-high = <0x0>;
+    gpio-mask-low = <0x5600>;
+    status = "okay";
+};
+```
+也没有用
+
+
+
+弃了. **`TMD`**!
+
+
+
+后来在参考<https://adaptivesupport.amd.com/s/article/Linux-video?language=en_US>
+
+发现这里, 怎么是t脚呢. 
+
+![img](images/gpio_err.png)
+
+### `fix gpio` 之后的测试
+
+版本`e10500a2`
+
+```
+root@petalinux:~# modetest -M xlnx
+[ 1014.117497] [drm] Pid 1059 opened device
+[ 1014.121541] [drm] Pid 1059 closed device
+Encoders:
+id      crtc    type    possible crtcs  possible clones
+39      38      TMDS    0x00000001      0x00000000
+
+Connectors:
+id      encoder status          name            size (mm)       modes   encoders
+40      39      connected       HDMI-A-1        600x340         42      39
+  modes:
+        name refresh (Hz) hdisp hss hse htot vdisp vss vse vtot)
+  3840x2160 60.00 3840 4016 4104 4400 2160 2164 2174 2250 594000 flags: phsync, pvsync; type: preferred, driver
+  3840x2160 60.00 3840 4016 4104 4400 2160 2168 2178 2250 594000 flags: phsync, pvsync; type: driver
+  3840x2160 59.94 3840 4016 4104 4400 2160 2168 2178 2250 593407 flags: phsync, pvsync; type: driver
+  3840x2160 50.00 3840 4896 4984 5280 2160 2168 2178 2250 594000 flags: phsync, pvsync; type: driver
+  3840x2160 30.00 3840 3888 3920 4400 2160 2163 2169 2250 297000 flags: phsync, nvsync; type: driver
+  3840x2160 30.00 3840 4016 4104 4400 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  3840x2160 30.00 3840 4016 4104 4400 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  3840x2160 29.97 3840 4016 4104 4400 2160 2168 2178 2250 296703 flags: phsync, pvsync; type: driver
+  3840x2160 25.00 3840 4896 4984 5280 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  3840x2160 24.00 3840 5116 5204 5500 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  3840x2160 23.98 3840 5116 5204 5500 2160 2168 2178 2250 296703 flags: phsync, pvsync; type: driver
+  1920x2160 60.00 1920 1968 2000 2200 2160 2163 2168 2250 297000 flags: phsync, nvsync; type: driver
+  2560x1440 59.95 2560 2608 2640 2720 1440 1443 1448 1481 241500 flags: phsync, nvsync; type: driver
+  2560x1080 60.00 2560 2808 2852 3000 1080 1084 1089 1100 198000 flags: phsync, pvsync; type: driver
+  2560x1080 59.94 2560 2808 2852 3000 1080 1084 1089 1100 197802 flags: phsync, pvsync; type: driver
+  1920x1080 60.00 1920 2008 2052 2200 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  1920x1080 60.00 1920 2008 2052 2200 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  1920x1080 59.94 1920 2008 2052 2200 1080 1084 1089 1125 148352 flags: phsync, pvsync; type: driver
+  1920x1080 50.00 1920 2448 2492 2640 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  1600x1200 60.00 1600 1664 1856 2160 1200 1201 1204 1250 162000 flags: phsync, pvsync; type: driver
+  1680x1050 59.88 1680 1728 1760 1840 1050 1053 1059 1080 119000 flags: phsync, nvsync; type: driver
+  1600x900 60.00 1600 1624 1704 1800 900 901 904 1000 108000 flags: phsync, pvsync; type: driver
+  1280x1024 60.02 1280 1328 1440 1688 1024 1025 1028 1066 108000 flags: phsync, pvsync; type: driver
+  1440x900 59.90 1440 1488 1520 1600 900 903 909 926 88750 flags: phsync, nvsync; type: driver
+  1280x960 60.00 1280 1376 1488 1800 960 961 964 1000 108000 flags: phsync, pvsync; type: driver
+  1920x1080i 30.00 1920 2008 2052 2200 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace; type: driver
+  1920x1080i 29.97 1920 2008 2052 2200 540 1084 1094 1125 74176 flags: phsync, pvsync, interlace; type: driver
+  1280x800 59.91 1280 1328 1360 1440 800 803 809 823 71000 flags: phsync, nvsync; type: driver
+  1280x720 60.00 1280 1390 1430 1650 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  1280x720 60.00 1280 1390 1430 1650 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  1280x720 59.94 1280 1390 1430 1650 720 725 730 750 74176 flags: phsync, pvsync; type: driver
+  1280x720 50.00 1280 1720 1760 1980 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  1024x768 60.00 1024 1048 1184 1344 768 771 777 806 65000 flags: nhsync, nvsync; type: driver
+  800x600 60.32 800 840 968 1056 600 601 605 628 40000 flags: phsync, pvsync; type: driver
+  720x576 50.00 720 732 796 864 576 581 586 625 27000 flags: nhsync, nvsync; type: driver
+  720x480 60.00 720 736 798 858 480 489 495 525 27027 flags: nhsync, nvsync; type: driver
+  720x480 60.00 720 736 798 858 480 489 495 525 27027 flags: nhsync, nvsync; type: driver
+  720x480 59.94 720 736 798 858 480 489 495 525 27000 flags: nhsync, nvsync; type: driver
+  720x480 59.94 720 736 798 858 480 489 495 525 27000 flags: nhsync, nvsync; type: driver
+  640x480 60.00 640 656 752 800 480 490 492 525 25200 flags: nhsync, nvsync; type: driver
+  640x480 59.94 640 656 752 800 480 490 492 525 25175 flags: nhsync, nvsync; type: driver
+  640x480 59.94 640 656 752 800 480 490 492 525 25175 flags: nhsync, nvsync; type: driver
+  props:
+        1 EDID:
+                flags: immutable blob
+                blobs:
+
+                value:
+                        00ffffffffffff002613002701000000
+                        2b220103803c22782aa785a7534e9d23
+                        11505421080081008140818081c0a9c0
+                        9500b300a94008e80030f2705a80b058
+                        4a005a532100001e000000fd00303c17
+                        e13c000a202020202020023a80187138
+                        2d40582c450059532100001e000000fc
+                        005532373043410a20202020202001cc
+                        020347f14d61605a10050403021f1312
+                        015f23097f07830100006d030c001000
+                        383c20006001020367d85dc401788803
+                        681a000001013040ede305e001e20f7e
+                        e60607016b534f04740030f2705a8030
+                        20360059532100001a0474801871705a
+                        803020350059532100001a565e00a0a0
+                        a029503020350059532100001a00005e
+        2 DPMS:
+                flags: enum
+                enums: On=0 Standby=1 Suspend=2 Off=3
+                value: 0
+        5 link-status:
+                flags: enum
+                enums: Good=0 Bad=1
+                value: 0
+        6 non-desktop:
+                flags: immutable range
+                values: 0 1
+                value: 0
+        4 TILE:
+                flags: immutable blob
+                blobs:
+
+                value:
+        20 CRTC_ID:
+                flags: object
+                value: 38
+
+CRTCs:
+id      fb      pos     size
+38      42      (0,0)   (3840x2160)
+  3840x2160 60.00 3840 4016 4104 4400 2160 2164 2174 2250 594000 flags: phsync, pvsync; type: preferred, driver
+  props:
+        22 ACTIVE:
+                flags: range
+                values: 0 1
+                value: 1
+        23 MODE_ID:
+                flags: blob
+                blobs:
+
+                value:
+                        50100900000fb00f0810301100007008
+                        74087e08ca0800003c00000005000000
+                        48000000333834307832313630000000
+                        00000000000000000000000000000000
+                        00000000
+        19 OUT_FENCE_PTR:
+                flags: range
+                values: 0 18446744073709551615
+                value: 0
+        24 VRR_ENABLED:
+                flags: range
+                values: 0 1
+                value: 0
+
+Planes:
+id      crtc    fb      CRTC x,y        x,y     gamma size      possible crtcs
+33      0       0       0,0             0,0     0               0x00000001
+  formats: YUYV
+  props:
+        8 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 0
+        17 FB_ID:
+                flags: object
+                value: 0
+        18 IN_FENCE_FD:
+                flags: signed range
+                values: -1 2147483647
+                value: -1
+        20 CRTC_ID:
+                flags: object
+                value: 0
+        13 CRTC_X:
+                flags: signed range
+                values: -2147483648 2147483647
+                value: 0
+        14 CRTC_Y:
+                flags: signed range
+                values: -2147483648 2147483647
+                value: 0
+        15 CRTC_W:
+                flags: range
+                values: 0 2147483647
+                value: 0
+        16 CRTC_H:
+                flags: range
+                values: 0 2147483647
+                value: 0
+        9 SRC_X:
+                flags: range
+                values: 0 4294967295
+                value: 0
+        10 SRC_Y:
+                flags: range
+                values: 0 4294967295
+                value: 0
+        11 SRC_W:
+                flags: range
+                values: 0 4294967295
+                value: 0
+        12 SRC_H:
+                flags: range
+                values: 0 4294967295
+                value: 0
+        32 alpha:
+                flags: range
+                values: 0 256
+                value: 256
+34      0       0       0,0             0,0     0               0x00000001
+  formats: YUYV
+  props:
+        8 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 0
+        17 FB_ID:
+                flags: object
+                value: 0
+        18 IN_FENCE_FD:
+                flags: signed range
+                values: -1 2147483647
+                value: -1
+        20 CRTC_ID:
+                flags: object
+                value: 0
+        13 CRTC_X:
+                flags: signed range
+                values: -2147483648 2147483647
+                value: 0
+        14 CRTC_Y:
+                flags: signed range
+                values: -2147483648 2147483647
+                value: 0
+        15 CRTC_W:
+                flags: range
+                values: 0 2147483647
+                value: 0
+        16 CRTC_H:
+                flags: range
+                values: 0 2147483647
+                value: 0
+        9 SRC_X:
+                flags: range
+                values: 0 4294967295
+                value: 0
+        10 SRC_Y:
+                flags: range
+                values: 0 4294967295
+                value: 0
+        11 SRC_W:
+                flags: range
+                values: 0 4294967295
+                value: 0
+        12 SRC_H:
+                flags: range
+                values: 0 4294967295
+                value: 0
+        32 alpha:
+                flags: range
+                values: 0 256
+                value: 256
+35      0       0       0,0             0,0     0               0x00000001
+  formats: UYVY
+  props:
+        8 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 0
+        17 FB_ID:
+                flags: object
+                value: 0
+        18 IN_FENCE_FD:
+                flags: signed range
+                values: -1 2147483647
+                value: -1
+        20 CRTC_ID:
+                flags: object
+                value: 0
+        13 CRTC_X:
+                flags: signed range
+                values: -2147483648 2147483647
+                value: 0
+        14 CRTC_Y:
+                flags: signed range
+                values: -2147483648 2147483647
+                value: 0
+        15 CRTC_W:
+                flags: range
+                values: 0 2147483647
+                value: 0
+        16 CRTC_H:
+                flags: range
+                values: 0 2147483647
+                value: 0
+        9 SRC_X:
+                flags: range
+                values: 0 4294967295
+                value: 0
+        10 SRC_Y:
+                flags: range
+                values: 0 4294967295
+                value: 0
+        11 SRC_W:
+                flags: range
+                values: 0 4294967295
+                value: 0
+        12 SRC_H:
+                flags: range
+                values: 0 4294967295
+                value: 0
+        32 alpha:
+                flags: range
+                values: 0 256
+                value: 256
+36      38      42      0,0             0,0     0               0x00000001
+  formats: AR24
+  props:
+        8 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 1
+        17 FB_ID:
+                flags: object
+                value: 42
+        18 IN_FENCE_FD:
+                flags: signed range
+                values: -1 2147483647
+                value: -1
+        20 CRTC_ID:
+                flags: object
+                value: 38
+        13 CRTC_X:
+                flags: signed range
+                values: -2147483648 2147483647
+                value: 0
+        14 CRTC_Y:
+                flags: signed range
+                values: -2147483648 2147483647
+                value: 0
+        15 CRTC_W:
+                flags: range
+                values: 0 2147483647
+                value: 3840
+        16 CRTC_H:
+                flags: range
+                values: 0 2147483647
+                value: 2160
+        9 SRC_X:
+                flags: range
+                values: 0 4294967295
+                value: 0
+        10 SRC_Y:
+                flags: range
+                values: 0 4294967295
+                value: 0
+        11 SRC_W:
+                flags: range
+                values: 0 4294967295
+                value: 251658240
+        12 SRC_H:
+                flags: range
+                values: 0 4294967295
+                value: 141557760
+        32 alpha:
+                flags: range
+                values: 0 256
+                value: 256
+37      0       0       0,0             0,0     0               0x00000001
+  formats: BG24
+  props:
+        8 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 0
+        17 FB_ID:
+                flags: object
+                value: 0
+        18 IN_FENCE_FD:
+                flags: signed range
+                values: -1 2147483647
+                value: -1
+        20 CRTC_ID:
+                flags: object
+                value: 0
+        13 CRTC_X:
+                flags: signed range
+                values: -2147483648 2147483647
+                value: 0
+        14 CRTC_Y:
+                flags: signed range
+                values: -2147483648 2147483647
+                value: 0
+        15 CRTC_W:
+                flags: range
+                values: 0 2147483647
+                value: 0
+        16 CRTC_H:
+                flags: range
+                values: 0 2147483647
+                value: 0
+        9 SRC_X:
+                flags: range
+                values: 0 4294967295
+                value: 0
+        10 SRC_Y:
+                flags: range
+                values: 0 4294967295
+                value: 0
+        11 SRC_W:
+                flags: range
+                values: 0 4294967295
+                value: 0
+        12 SRC_H:
+                flags: range
+                values: 0 4294967295
+                value: 0
+
+Frame buffers:
+id      size    pitch
+```
+
+
+
+可以的
+
+```
+setenv bootargs 'console=ttyPS0,115200 earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/ram0 rw earlyprintk uio_pdrv_genirq.of_id=xlnx,generic-uio cma=700M cpuidle.off=1 cpufreq.off=1'
+
+modetest -M xlnx -s 40@38:3840x2160-60@AR24
+
+gst-launch-1.0 -v \
+  videotestsrc pattern=smpte \
+  ! video/x-raw,format=BGRA,width=3840,height=2160,framerate=60/1 \
+  ! kmssink driver-name=xlnx plane-id=36 sync=false
+```
+
+不可以的
+
+```
+modetest -M xlnx -s 40@38:3840x2160-60@XR24
+
+root@petalinux:~# modetest -M xlnx -s 40@38:3840x2160-60@XR24
+[  428.697612] [drm] Pid 984 opened device
+[  428.701481] [drm] Pid 984 closed device
+setting mode 3840x2160-60.00Hz@XR24 on connectors 40, crtc 38
+failed to set mode: Function not implemented
+
+
+root@petalinux:~# gst-launch-1.0 \
+>   videotestsrc pattern=smpte \
+>   ! video/x-raw,format=BGRx,width=3840,height=2160,framerate=60/1 \
+>   ! videoconvert \
+>   ! video/x-raw,format=ARGB \
+>   ! kmssink driver-name=xlnx sync=false
+WARNING: erroneous pipeline: could not link videoconvert0 to kmssink0, kmssink0 can't handle caps video/x-raw, format=(string)ARGB
+
+root@petalinux:~# gst-launch-1.0 \
+>   videotestsrc pattern=smpte \
+>   ! video/x-raw,format=XRGB,width=3840,height=2160,framerate=60/1 \
+>   ! videoconvert \
+>   ! video/x-raw,format=XRGB \
+>   ! kmssink driver-name=xlnx sync=false
+WARNING: erroneous pipeline: could not link videotestsrc0 to videoconvert0, neither element can handle caps video/x-raw, format=(string)XRGB, width=(int)3840, height=(int)2160, framerate=(fraction)60/1
+
+root@petalinux:~# gst-launch-1.0 -v \
+>   videotestsrc pattern=smpte \
+>   ! video/x-raw,format=BGRx,width=3840,height=2160,framerate=60/1 \
+>   ! kmssink driver-name=xlnx plane-id=36 sync=false
+Setting pipeline to PAUSED ...
+[  950.417630] [drm] Pid 1042 opened device
+[  950.424248] [drm] Pid 1042 closed device
+Pipeline is PREROLLING ...
+/GstPipeline:pipeline0/GstKMSSink:kmssink0: display-width = 3840
+/GstPipeline:pipeline0/GstKMSSink:kmssink0: display-height = 2160
+ERROR: from element /GstPipeline:pipeline0/GstVideoTestSrc:videotestsrc0: Internal data stream error.
+Additional debug info:
+../../../../git/libs/gst/base/gstbasesrc.c(3072): gst_base_src_loop (): /GstPipeline:pipeline0/GstVideoTestSrc:videotestsrc0:
+streaming stopped, reason not-negotiated (-4)
+ERROR: pipeline doesn't want to preroll.
+Setting pipeline to NULL ...
+Freeing pipeline ...
+
+
+```
+
+
 
 
 
@@ -5046,12 +5970,1006 @@ dtc -I dts -O dtb -o new.dtb system.dts
 
 `zcu106 vcu_trd` 基本都是围绕 `VCU` 来配置`input.cfg`,进而使用`vcu_gst_app`
 
-### 测试1
+### 测试版本1
 
 实际工程和原工程的主要区别是
 
 * 去掉了`hdmi-rx`
 * 简化了 `csi-rx`路径
-* 取消原设计`vphy`的`dru-clk`
-* 地址分布尽量少变化
+* `AIX4`总线地址空间分布不同
+* `ip`复位采用`xgpio`而不是`emio`
+
+```
+echo N > /sys/module/xlnx_mixer/parameters/mixer_primary_enable
+modetest -M xlnx -s 41@39:3840x2160-60@BG24
+```
+
+`gst`本身的测试彩条啥的都能显示
+
+
+
+也有`tpg`的设备节点了
+
+```
+root@petalinux:~# v4l2-ctl -d /dev/video0 --all
+Driver Info:
+        Driver name      : xilinx-vipp
+        Card type        : vcap_tpg_input_v_tpg_0 output 0
+        Bus info         : platform:vcap_tpg_input_v_tpg_0
+        Driver version   : 5.15.36
+        Capabilities     : 0x84201000
+                Video Capture Multiplanar
+                Streaming
+                Extended Pix Format
+                Device Capabilities
+        Device Caps      : 0x04201000
+                Video Capture Multiplanar
+                Streaming
+                Extended Pix Format
+Media Driver Info:
+        Driver name      : xilinx-video
+        Model            : Xilinx Video Composite Device
+        Serial           : 
+        Bus info         : 
+        Media version    : 5.15.36
+        Hardware revision: 0x00000000 (0)
+        Driver version   : 5.15.36
+Interface Info:
+        ID               : 0x03000003
+        Type             : V4L Video
+Entity Info:
+        ID               : 0x00000001 (1)
+        Name             : vcap_tpg_input_v_tpg_0 output 0
+        Function         : V4L2 I/O
+        Pad 0x01000002   : 0: Sink
+          Link 0x02000008: from remote pad 0x1000007 of entity 'a0130000.v_tpg': Data, Enabled
+Priority: 2
+Video input : 0 (a0130000.v_tpg: ok)
+Format Video Capture Multiplanar:
+        Width/Height      : 3840/2160
+        Pixel Format      : 'BGR3' (24-bit BGR 8-8-8)
+        Field             : None
+        Number of planes  : 1
+        Flags             : 
+        Colorspace        : sRGB
+        Transfer Function : sRGB
+        YCbCr/HSV Encoding: Default
+        Quantization      : Full Range
+        Plane 0           :
+           Bytes per Line : 11520
+           Size Image     : 24883200
+Selection Video Capture: compose, Left 0, Top 0, Width 3840, Height 2160, Flags: 
+Selection Video Capture: compose_default, Left 0, Top 0, Width 3840, Height 2160, Flags: 
+Selection Video Capture: compose_bounds, Left 0, Top 0, Width 3840, Height 2160, Flags: 
+Selection Video Output: crop, Left 0, Top 0, Width 3840, Height 2160, Flags: 
+Selection Video Output: crop_default, Left 0, Top 0, Width 3840, Height 2160, Flags: 
+Selection Video Output: crop_bounds, Left 0, Top 0, Width 3840, Height 2160, Flags: 
+
+User Controls
+
+        test_pattern_color_mask 0x0098c903 (bitmask): max=0x00000007 default=0x00000000 value=0x00000000
+      test_pattern_motion_speed 0x0098c907 (int)    : min=0 max=255 step=1 default=4 value=4 flags=slider
+   test_pattern_cross_hairs_row 0x0098c908 (int)    : min=0 max=4095 step=1 default=100 value=100 flags=slider
+ test_pattern_cross_hairs_colum 0x0098c909 (int)    : min=0 max=4095 step=1 default=100 value=100 flags=slider
+ test_pattern_zplate_horizontal 0x0098c90a (int)    : min=0 max=65535 step=1 default=30 value=30 flags=slider
+ test_pattern_zplate_horizontal 0x0098c90b (int)    : min=0 max=65535 step=1 default=0 value=0 flags=slider
+ test_pattern_zplate_vertical_s 0x0098c90c (int)    : min=0 max=65535 step=1 default=1 value=1 flags=slider
+ test_pattern_zplate_vertical_s 0x0098c90d (int)    : min=0 max=65535 step=1 default=0 value=0 flags=slider
+          test_pattern_box_size 0x0098c90e (int)    : min=0 max=4095 step=1 default=50 value=50 flags=slider
+ test_pattern_box_color_rgb_ycb 0x0098c90f (int)    : min=0 max=16777215 step=1 default=0 value=0
+ test_pattern_foreground_patter 0x0098c912 (menu)   : min=0 max=2 default=0 value=0
+                                0: No Overlay
+                                1: Moving Box
+                                2: Cross Hairs
+           low_latency_controls 0x0098ca21 (int)    : min=2 max=8 step=1 default=4 value=4
+
+Image Source Controls
+
+              vertical_blanking 0x009e0901 (int)    : min=3 max=8159 step=1 default=100 value=100
+            horizontal_blanking 0x009e0902 (int)    : min=3 max=8159 step=1 default=100 value=100
+
+Image Processing Controls
+
+                   test_pattern 0x009f0903 (menu)   : min=0 max=16 default=9 value=9
+                                0: Passthrough
+                                1: Horizontal Ramp
+                                2: Vertical Ramp
+                                3: Temporal Ramp
+                                4: Solid Red
+                                5: Solid Green
+                                6: Solid Blue
+                                7: Solid Black
+                                8: Solid White
+                                9: Color Bars
+                                10: Zone Plate
+                                11: Tartan Color Bars
+                                12: Cross Hatch
+                                13: Color Sweep
+                                14: Vertical/Horizontal Ramps
+                                15: Black/White Checker Board
+                                16: PseudoRandom
+root@petalinux:~# media-ctl -p
+Media controller API version 5.15.36
+
+Media device information
+------------------------
+driver          xilinx-video
+model           Xilinx Video Composite Device
+serial          
+bus info        
+hw revision     0x0
+driver version  5.15.36
+
+Device topology
+- entity 1: vcap_tpg_input_v_tpg_0 output 0 (1 pad, 1 link)
+            type Node subtype V4L flags 0
+            device node name /dev/video0
+        pad0: Sink
+                <- "a0130000.v_tpg":1 [ENABLED]
+
+- entity 5: a0130000.v_tpg (2 pads, 1 link)
+            type V4L2 subdev subtype Unknown flags 0
+            device node name /dev/v4l-subdev0
+        pad0: Sink
+                [fmt:RBG888_1X24/0x0@1/30 field:none colorspace:srgb]
+        pad1: Source
+                [fmt:RBG888_1X24/0x0@1/30 field:none colorspace:srgb]
+                -> "vcap_tpg_input_v_tpg_0 output 0":0 [ENABLED]
+```
+
+
+
+```bash
+root@petalinux:~# modetest -M xlnx -s 41@39:3840x2160-60@BG24
+root@petalinux:~# modetest -M xlnx
+root@petalinux:~# modetest -M xlnx
+Encoders:
+id      crtc    type    possible crtcs  possible clones
+40      39      TMDS    0x00000001      0x00000001
+
+Connectors:
+id      encoder status          name            size (mm)       modes   encoders
+41      40      connected       HDMI-A-1        600x340         36      40
+  modes:
+        index name refresh (Hz) hdisp hss hse htot vdisp vss vse vtot
+  #0 3840x2160 60.00 3840 4016 4104 4400 2160 2164 2174 2250 594000 flags: phsync, pvsync; type: preferred, driver
+  #1 3840x2160 60.00 3840 4016 4104 4400 2160 2168 2178 2250 594000 flags: phsync, pvsync; type: driver
+  #2 3840x2160 59.94 3840 4016 4104 4400 2160 2168 2178 2250 593407 flags: phsync, pvsync; type: driver
+  #3 3840x2160 50.00 3840 4896 4984 5280 2160 2168 2178 2250 594000 flags: phsync, pvsync; type: driver
+  #4 3840x2160 30.00 3840 3888 3920 4400 2160 2163 2169 2250 297000 flags: phsync, nvsync; type: driver
+  #5 3840x2160 30.00 3840 4016 4104 4400 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  #6 3840x2160 29.97 3840 4016 4104 4400 2160 2168 2178 2250 296703 flags: phsync, pvsync; type: driver
+  #7 3840x2160 25.00 3840 4896 4984 5280 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  #8 3840x2160 24.00 3840 5116 5204 5500 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  #9 3840x2160 23.98 3840 5116 5204 5500 2160 2168 2178 2250 296703 flags: phsync, pvsync; type: driver
+  #10 1920x2160 60.00 1920 1968 2000 2200 2160 2163 2168 2250 297000 flags: phsync, nvsync; type: driver
+  #11 2560x1440 59.95 2560 2608 2640 2720 1440 1443 1448 1481 241500 flags: phsync, nvsync; type: driver
+  #12 2560x1080 60.00 2560 2808 2852 3000 1080 1084 1089 1100 198000 flags: phsync, pvsync; type: driver
+  #13 2560x1080 59.94 2560 2808 2852 3000 1080 1084 1089 1100 197802 flags: phsync, pvsync; type: driver
+  #14 1920x1080 60.00 1920 2008 2052 2200 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  #15 1920x1080 59.94 1920 2008 2052 2200 1080 1084 1089 1125 148352 flags: phsync, pvsync; type: driver
+  #16 1920x1080 50.00 1920 2448 2492 2640 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  #17 1600x1200 60.00 1600 1664 1856 2160 1200 1201 1204 1250 162000 flags: phsync, pvsync; type: driver
+  #18 1680x1050 59.88 1680 1728 1760 1840 1050 1053 1059 1080 119000 flags: phsync, nvsync; type: driver
+  #19 1600x900 60.00 1600 1624 1704 1800 900 901 904 1000 108000 flags: phsync, pvsync; type: driver
+  #20 1280x1024 60.02 1280 1328 1440 1688 1024 1025 1028 1066 108000 flags: phsync, pvsync; type: driver
+  #21 1440x900 59.90 1440 1488 1520 1600 900 903 909 926 88750 flags: phsync, nvsync; type: driver
+  #22 1280x960 60.00 1280 1376 1488 1800 960 961 964 1000 108000 flags: phsync, pvsync; type: driver
+  #23 1920x1080i 30.00 1920 2008 2052 2200 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace; type: driver
+  #24 1920x1080i 29.97 1920 2008 2052 2200 540 1084 1094 1125 74176 flags: phsync, pvsync, interlace; type: driver
+  #25 1280x800 59.91 1280 1328 1360 1440 800 803 809 823 71000 flags: phsync, nvsync; type: driver
+  #26 1280x720 60.00 1280 1390 1430 1650 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  #27 1280x720 59.94 1280 1390 1430 1650 720 725 730 750 74176 flags: phsync, pvsync; type: driver
+  #28 1280x720 50.00 1280 1720 1760 1980 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  #29 1024x768 60.00 1024 1048 1184 1344 768 771 777 806 65000 flags: nhsync, nvsync; type: driver
+  #30 800x600 60.32 800 840 968 1056 600 601 605 628 40000 flags: phsync, pvsync; type: driver
+  #31 720x576 50.00 720 732 796 864 576 581 586 625 27000 flags: nhsync, nvsync; type: driver
+  #32 720x480 60.00 720 736 798 858 480 489 495 525 27027 flags: nhsync, nvsync; type: driver
+  #33 720x480 59.94 720 736 798 858 480 489 495 525 27000 flags: nhsync, nvsync; type: driver
+  #34 640x480 60.00 640 656 752 800 480 490 492 525 25200 flags: nhsync, nvsync; type: driver
+  #35 640x480 59.94 640 656 752 800 480 490 492 525 25175 flags: nhsync, nvsync; type: driver
+  props:
+        1 EDID:
+                flags: immutable blob
+                blobs:
+
+                value:
+                        00ffffffffffff002613002701000000
+                        2b220103803c22782aa785a7534e9d23
+                        11505421080081008140818081c0a9c0
+                        9500b300a94008e80030f2705a80b058
+                        4a005a532100001e000000fd00303c17
+                        e13c000a202020202020023a80187138
+                        2d40582c450059532100001e000000fc
+                        005532373043410a20202020202001cc
+                        020347f14d61605a10050403021f1312
+                        015f23097f07830100006d030c001000
+                        383c20006001020367d85dc401788803
+                        681a000001013040ede305e001e20f7e
+                        e60607016b534f04740030f2705a8030
+                        20360059532100001a0474801871705a
+                        803020350059532100001a565e00a0a0
+                        a029503020350059532100001a00005e
+        2 DPMS:
+                flags: enum
+                enums: On=0 Standby=1 Suspend=2 Off=3
+                value: 0
+        5 link-status:
+                flags: enum
+                enums: Good=0 Bad=1
+                value: 0
+        6 non-desktop:
+                flags: immutable range
+                values: 0 1
+                value: 0
+        4 TILE:
+                flags: immutable blob
+                blobs:
+
+                value:
+        8 GEN_HDR_OUTPUT_METADATA:
+                flags: blob
+                blobs:
+
+                value:
+                        00000000000000000000000000000000
+                        00000000000000000000000000000000
+                        00000000000000000000000000000000
+                        00000000000000000000000000000000
+...
+
+        42 colorspace:
+                flags: range
+                values: 0 12
+                value: 0
+        43 ycbcr_enc:
+                flags: range
+                values: 0 8
+                value: 0
+        44 xfer_func:
+                flags: range
+                values: 0 7
+                value: 0
+        45 quantization:
+                flags: range
+                values: 0 2
+                value: 0
+        46 height_out:
+                flags: range
+                values: 480 2160
+                value: 0
+        47 width_out:
+                flags: range
+                values: 640 4096
+                value: 0
+        48 in_fmt:
+                flags: range
+                values: 4106 8448
+                value: 0
+        49 out_fmt:
+                flags: range
+                values: 4106 8448
+                value: 0
+        50 aspect_ratio:
+                flags: range
+                values: 0 3
+                value: 0
+
+CRTCs:
+id      fb      pos     size
+39      0       (0,0)   (3840x2160)
+  #0 3840x2160 60.00 3840 4016 4104 4400 2160 2164 2174 2250 594000 flags: phsync, pvsync; type: preferred, driver
+  props:
+        25 VRR_ENABLED:
+                flags: range
+                values: 0 1
+                value: 0
+
+Planes:
+id      crtc    fb      CRTC x,y        x,y     gamma size      possible crtcs
+34      0       0       0,0             0,0     0               0x00000001
+  formats: NV12
+  props:
+        9 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 0
+35      0       0       0,0             0,0     0               0x00000001
+  formats: YUYV
+  props:
+        9 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 0
+36      0       0       0,0             0,0     0               0x00000001
+  formats: UYVY
+  props:
+        9 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 0
+37      0       0       0,0             0,0     0               0x00000001
+  formats: AB24
+  props:
+        9 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 0
+        33 alpha:
+                flags: range
+                values: 0 256
+                value: 256
+38      0       0       0,0             0,0     0               0x00000001
+  formats: BG24
+  props:
+        9 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 1
+
+Frame buffers:
+id      size    pitch
+
+
+
+
+
+
+root@petalinux:~# modetest -M xlnx -s 41@39:1920x1080-60@BG24
+root@petalinux:~# modetest -M xlnx
+Encoders:
+id      crtc    type    possible crtcs  possible clones
+40      39      TMDS    0x00000001      0x00000001
+
+Connectors:
+id      encoder status          name            size (mm)       modes   encoders
+41      40      connected       HDMI-A-1        600x340         36      40
+  modes:
+        index name refresh (Hz) hdisp hss hse htot vdisp vss vse vtot
+  #0 3840x2160 60.00 3840 4016 4104 4400 2160 2164 2174 2250 594000 flags: phsync, pvsync; type: preferred, driver
+  #1 3840x2160 60.00 3840 4016 4104 4400 2160 2168 2178 2250 594000 flags: phsync, pvsync; type: driver
+  #2 3840x2160 59.94 3840 4016 4104 4400 2160 2168 2178 2250 593407 flags: phsync, pvsync; type: driver
+  #3 3840x2160 50.00 3840 4896 4984 5280 2160 2168 2178 2250 594000 flags: phsync, pvsync; type: driver
+  #4 3840x2160 30.00 3840 3888 3920 4400 2160 2163 2169 2250 297000 flags: phsync, nvsync; type: driver
+  #5 3840x2160 30.00 3840 4016 4104 4400 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  #6 3840x2160 29.97 3840 4016 4104 4400 2160 2168 2178 2250 296703 flags: phsync, pvsync; type: driver
+  #7 3840x2160 25.00 3840 4896 4984 5280 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  #8 3840x2160 24.00 3840 5116 5204 5500 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  #9 3840x2160 23.98 3840 5116 5204 5500 2160 2168 2178 2250 296703 flags: phsync, pvsync; type: driver
+  #10 1920x2160 60.00 1920 1968 2000 2200 2160 2163 2168 2250 297000 flags: phsync, nvsync; type: driver
+  #11 2560x1440 59.95 2560 2608 2640 2720 1440 1443 1448 1481 241500 flags: phsync, nvsync; type: driver
+  #12 2560x1080 60.00 2560 2808 2852 3000 1080 1084 1089 1100 198000 flags: phsync, pvsync; type: driver
+  #13 2560x1080 59.94 2560 2808 2852 3000 1080 1084 1089 1100 197802 flags: phsync, pvsync; type: driver
+  #14 1920x1080 60.00 1920 2008 2052 2200 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  #15 1920x1080 59.94 1920 2008 2052 2200 1080 1084 1089 1125 148352 flags: phsync, pvsync; type: driver
+  #16 1920x1080 50.00 1920 2448 2492 2640 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  #17 1600x1200 60.00 1600 1664 1856 2160 1200 1201 1204 1250 162000 flags: phsync, pvsync; type: driver
+  #18 1680x1050 59.88 1680 1728 1760 1840 1050 1053 1059 1080 119000 flags: phsync, nvsync; type: driver
+  #19 1600x900 60.00 1600 1624 1704 1800 900 901 904 1000 108000 flags: phsync, pvsync; type: driver
+  #20 1280x1024 60.02 1280 1328 1440 1688 1024 1025 1028 1066 108000 flags: phsync, pvsync; type: driver
+  #21 1440x900 59.90 1440 1488 1520 1600 900 903 909 926 88750 flags: phsync, nvsync; type: driver
+  #22 1280x960 60.00 1280 1376 1488 1800 960 961 964 1000 108000 flags: phsync, pvsync; type: driver
+  #23 1920x1080i 30.00 1920 2008 2052 2200 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace; type: driver
+  #24 1920x1080i 29.97 1920 2008 2052 2200 540 1084 1094 1125 74176 flags: phsync, pvsync, interlace; type: driver
+  #25 1280x800 59.91 1280 1328 1360 1440 800 803 809 823 71000 flags: phsync, nvsync; type: driver
+  #26 1280x720 60.00 1280 1390 1430 1650 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  #27 1280x720 59.94 1280 1390 1430 1650 720 725 730 750 74176 flags: phsync, pvsync; type: driver
+  #28 1280x720 50.00 1280 1720 1760 1980 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  #29 1024x768 60.00 1024 1048 1184 1344 768 771 777 806 65000 flags: nhsync, nvsync; type: driver
+  #30 800x600 60.32 800 840 968 1056 600 601 605 628 40000 flags: phsync, pvsync; type: driver
+  #31 720x576 50.00 720 732 796 864 576 581 586 625 27000 flags: nhsync, nvsync; type: driver
+  #32 720x480 60.00 720 736 798 858 480 489 495 525 27027 flags: nhsync, nvsync; type: driver
+  #33 720x480 59.94 720 736 798 858 480 489 495 525 27000 flags: nhsync, nvsync; type: driver
+  #34 640x480 60.00 640 656 752 800 480 490 492 525 25200 flags: nhsync, nvsync; type: driver
+  #35 640x480 59.94 640 656 752 800 480 490 492 525 25175 flags: nhsync, nvsync; type: driver
+  props:
+        1 EDID:
+                flags: immutable blob
+                blobs:
+
+                value:
+                        00ffffffffffff002613002701000000
+                        2b220103803c22782aa785a7534e9d23
+                        11505421080081008140818081c0a9c0
+                        9500b300a94008e80030f2705a80b058
+                        4a005a532100001e000000fd00303c17
+                        e13c000a202020202020023a80187138
+                        2d40582c450059532100001e000000fc
+                        005532373043410a20202020202001cc
+                        020347f14d61605a10050403021f1312
+                        015f23097f07830100006d030c001000
+                        383c20006001020367d85dc401788803
+                        681a000001013040ede305e001e20f7e
+                        e60607016b534f04740030f2705a8030
+                        20360059532100001a0474801871705a
+                        803020350059532100001a565e00a0a0
+                        a029503020350059532100001a00005e
+        2 DPMS:
+                flags: enum
+                enums: On=0 Standby=1 Suspend=2 Off=3
+                value: 0
+        5 link-status:
+                flags: enum
+                enums: Good=0 Bad=1
+                value: 0
+        6 non-desktop:
+                flags: immutable range
+                values: 0 1
+                value: 0
+        4 TILE:
+                flags: immutable blob
+                blobs:
+
+                value:
+        8 GEN_HDR_OUTPUT_METADATA:
+                flags: blob
+                blobs:
+
+                value:
+                        00000000000000000000000000000000
+                        00000000000000000000000000000000
+                        00000000000000000000000000000000
+                        00000000000000000000000000000000
+                        00000000000000000000000000000000
+                        00000000000000000000000000000000
+  ...
+  
+        42 colorspace:
+                flags: range
+                values: 0 12
+                value: 0
+        43 ycbcr_enc:
+                flags: range
+                values: 0 8
+                value: 0
+        44 xfer_func:
+                flags: range
+                values: 0 7
+                value: 0
+        45 quantization:
+                flags: range
+                values: 0 2
+                value: 0
+        46 height_out:
+                flags: range
+                values: 480 2160
+                value: 0
+        47 width_out:
+                flags: range
+                values: 640 4096
+                value: 0
+        48 in_fmt:
+                flags: range
+                values: 4106 8448
+                value: 0
+        49 out_fmt:
+                flags: range
+                values: 4106 8448
+                value: 0
+        50 aspect_ratio:
+                flags: range
+                values: 0 3
+                value: 0
+
+CRTCs:
+id      fb      pos     size
+39      0       (0,0)   (1920x1080)
+  #0 1920x1080 60.00 1920 2008 2052 2200 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  props:
+        25 VRR_ENABLED:
+                flags: range
+                values: 0 1
+                value: 0
+
+Planes:
+id      crtc    fb      CRTC x,y        x,y     gamma size      possible crtcs
+34      0       0       0,0             0,0     0               0x00000001
+  formats: NV12
+  props:
+        9 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 0
+35      0       0       0,0             0,0     0               0x00000001
+  formats: YUYV
+  props:
+        9 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 0
+36      0       0       0,0             0,0     0               0x00000001
+  formats: UYVY
+  props:
+        9 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 0
+37      0       0       0,0             0,0     0               0x00000001
+  formats: AB24
+  props:
+        9 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 0
+        33 alpha:
+                flags: range
+                values: 0 256
+                value: 256
+38      0       0       0,0             0,0     0               0x00000001
+  formats: BG24
+  props:
+        9 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 1
+
+Frame buffers:
+id      size    pitch
+
+
+```
+
+
+
+
+
+我给
+
+```
+gst-launch-1.0 \
+  v4l2src device=/dev/video0 io-mode=mmap \
+  ! video/x-raw,format=BGRx,width=3840,height=2160,framerate=60/1 \
+  ! videoconvert \
+  ! kmssink driver-name=xlnx sync=false
+  
+   
+gst-launch-1.0 \
+  v4l2src device=/dev/video0 io-mode=mmap ! \
+  video/x-raw,format=BGR,width=3840,height=2160 ! \
+  videoconvert ! \
+  autovideosink
+
+gst-launch-1.0 \
+  v4l2src device=/dev/video0 io-mode=userptr ! \
+  video/x-raw,format=BGR,width=3840,height=2160 ! \
+  videoconvert ! \
+  autovideosink
+
+```
+
+都不行. 大部分是这样的错误
+```
+Setting pipeline to PAUSED ...
+Pipeline is live and does not need PREROLL ...
+Pipeline is PREROLLED ...
+Setting pipeline to PLAYING ...
+New clock: GstSystemClock
+ERROR: from element /GstPipeline:pipeline0/GstV4l2Src:v4l2src0: Failed to allocate required memory.
+Additional debug info:
+../git/sys/v4l2/gstv4l2src.c(759): gst_v4l2src_decide_allocation (): /GstPipeline:pipeline0/GstV4l2Src:v4l2src0:
+Buffer pool activation failed
+Execution ended after 0:00:00.090758970
+Setting pipeline to NULL ...
+ERROR: from element /GstPipeline:pipeline0/GstV4l2Src:v4l2src0: Internal data stream error.
+Additional debug info:
+../git/libs/gst/base/gstbasesrc.c(3127): gst_base_src_loop (): /GstPipeline:pipeline0/GstV4l2Src:v4l2src0:
+streaming stopped, reason not-negotiated (-4)
+Freeing pipeline ...
+
+```
+
+`dmesg | grep -i dma`确实有报错
+
+```
+[   10.585880] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: DMA initialization failed
+
+```
+
+`cma`看起来没错
+
+```
+root@petalinux:~# dmesg | grep cma
+[    0.000000] cma: Reserved 1000 MiB at 0x0000000034400000
+[    0.000000] Kernel command line:  earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/ram0 rw cma=1000M init_fatal_sh=1 cma=1000M
+[    0.000000] Memory: 2854820K/4193280K available (13888K kernel code, 990K rwdata, 3920K rodata, 2176K init, 573K bss, 314460K reserved, 1024000K cma-reserved)
+```
+
+
+
+有关`dts`, 其实也看不出有啥明显错误
+
+```dtd
+        tpg_input_v_tpg_0: v_tpg@a0130000 {
+			clock-names = "ap_clk";
+			clocks = <&zynqmp_clk 74>;
+			compatible = "xlnx,v-tpg-8.2", "xlnx,v-tpg-8.0";
+			reg = <0x0 0xa0130000 0x0 0x10000>;
+			reset-gpios = <&rest_gpio 7 1>;
+			xlnx,max-height = <2160>;
+			xlnx,max-width = <4096>;
+			xlnx,ppc = <2>;
+			xlnx,s-axi-ctrl-addr-width = <8>;
+			xlnx,s-axi-ctrl-data-width = <32>;
+			xlnx,vtc = <&tpg_input_v_tc_0>;
+			tpg_portstpg_input_v_tpg_0: ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				tpg_port1tpg_input_v_tpg_0: port@1 {
+					/* Fill the field xlnx,video-format based on user requirement */
+					reg = <1>;
+					xlnx,video-format = <2>;
+					xlnx,video-width = <8>;
+					tpg_outtpg_input_v_tpg_0: endpoint {
+						remote-endpoint = <&tpg_input_v_frmbuf_wr_0tpg_input_v_tpg_0>;
+					};
+				};
+				tpg_port0tpg_input_v_tpg_0: port@0 {
+					/* Fill the field xlnx,video-format based on user requirement */
+					reg = <0>;
+					xlnx,video-format = <2>;
+					xlnx,video-width = <8>;
+				};
+			};
+		};
+		
+        tpg_input_v_frmbuf_wr_0: v_frmbuf_wr@a0110000 {
+			#dma-cells = <1>;
+			clock-names = "ap_clk";
+			clocks = <&zynqmp_clk 74>;
+			compatible = "xlnx,v-frmbuf-wr-2.4", "xlnx,axi-frmbuf-wr-v2.2";
+			interrupt-names = "interrupt";
+			interrupt-parent = <&gic>;
+			interrupts = <0 94 4>;
+			reg = <0x0 0xa0110000 0x0 0x10000>;
+			reset-gpios = <&rest_gpio 8 1>;
+			xlnx,dma-addr-width = <32>;
+			xlnx,dma-align = <16>;
+			xlnx,max-height = <3000>;
+			xlnx,max-width = <4096>;
+			xlnx,pixels-per-clock = <2>;
+			xlnx,s-axi-ctrl-addr-width = <0x7>;
+			xlnx,s-axi-ctrl-data-width = <0x20>;
+			xlnx,vid-formats = "rgb888", "bgr888", "uyvy", "vuy888", "yuyv", "nv12", "nv16";
+			xlnx,video-width = <8>;
+		};
+		
+    	vcap_tpg_input_v_tpg_0 {
+			compatible = "xlnx,video";
+			dma-names = "port0";
+			dmas = <&tpg_input_v_frmbuf_wr_0 0>;
+			vcap_portstpg_input_v_tpg_0: ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				vcap_porttpg_input_v_tpg_0: port@0 {
+					direction = "input";
+					reg = <0>;
+					tpg_input_v_frmbuf_wr_0tpg_input_v_tpg_0: endpoint {
+						remote-endpoint = <&tpg_outtpg_input_v_tpg_0>;
+					};
+				};
+			};
+		};
+```
+
+
+
+#### `TPG`给出彩条成功
+
+在`63c450a1`版本测试来自下面链接的命令
+
+https://adaptivesupport.amd.com/s/article/Linux-video?language=en_US
+
+```
+media-ctl -d /dev/media0 -p
+media-ctl -v -d /dev/media0 -V "\"a0130000.v_tpg\":0 [fmt:RGB888_1X24/1920x1080 field:none]"
+media-ctl -d /dev/media0 -p
+media-ctl -v -d /dev/media0 -V "\"a0130000.v_tpg\":0 [fmt:RGB888_1X24/1920x1080@1/60 field:none]"
+media-ctl -d /dev/media0 -p
+
+modetest -M xlnx -s 41@39:1920x1080-60@BG24
+
+
+gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=2 ! video/x-raw, width=1920, height=1080, framerate=60/1, format=RGB! queue max-size-bytes=0 ! videoconvert ! kmssink driver-name=xlnx
+
+
+gst-launch-1.0 -v \
+  v4l2src device=/dev/video0 io-mode=2 ! \
+  video/x-raw,width=1920,height=1080,framerate=60/1,format=RGB ! \
+  videoconvert ! \
+  kmssink driver-name=xlnx
+
+
+modetest -M xlnx -s 41@39:3840x2160-60@BG24
+
+media-ctl -v -d /dev/media0 -V "\"a0130000.v_tpg\":0 [fmt:RGB888_1X24/3840x2160@1/60 field:none]"
+media-ctl -d /dev/media0 -p
+
+gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=2 ! video/x-raw, width=3840, height=2160, framerate=60/1, format=RGB! queue max-size-bytes=0 ! videoconvert ! kmssink driver-name=xlnx
+
+
+v4l2-ctl -d /dev/video0 --set-ctrl=test_pattern=4
+v4l2-ctl -d /dev/video0 --set-ctrl=test_pattern=8
+v4l2-ctl -d /dev/video0 --set-ctrl=test_pattern_foreground_patter=1
+v4l2-ctl -d /dev/video0 --set-ctrl=test_pattern_motion_speed=40
+v4l2-ctl -d /dev/video0 --set-ctrl=test_pattern_box_size=300
+```
+
+
+
+```
+root@petalinux:~# echo N > /sys/module/xlnx_mixer/parameters/mixer_primary_enable
+root@petalinux:~# media-ctl -d /dev/media0 -p
+Media controller API version 5.15.36
+
+Media device information
+------------------------
+driver          xilinx-video
+model           Xilinx Video Composite Device
+serial          
+bus info        
+hw revision     0x0
+driver version  5.15.36
+
+Device topology
+- entity 1: vcap_tpg_input_v_tpg_0 output 0 (1 pad, 1 link)
+            type Node subtype V4L flags 0
+            device node name /dev/video0
+        pad0: Sink
+                <- "a0130000.v_tpg":1 [ENABLED]
+
+- entity 5: a0130000.v_tpg (2 pads, 1 link)
+            type V4L2 subdev subtype Unknown flags 0
+            device node name /dev/v4l-subdev0
+        pad0: Sink
+                [fmt:RBG888_1X24/0x0@1/30 field:none colorspace:srgb]
+        pad1: Source
+                [fmt:RBG888_1X24/0x0@1/30 field:none colorspace:srgb]
+                -> "vcap_tpg_input_v_tpg_0 output 0":0 [ENABLED]
+
+root@petalinux:~# media-ctl -v -d /dev/media0 -V "\"a0130000.v_tpg\":0 [fmt:RGB888_1X24/1920x1080 field:none]"
+Opening media device /dev/media0
+Enumerating entities
+looking up device: 81:0
+looking up device: 81:1
+Found 2 entities
+Enumerating pads and links
+Setting up format RGB888_1X24 1920x1080 on pad a0130000.v_tpg/0
+Format set: RBG888_1X24 1920x1080
+root@petalinux:~# media-ctl -d /dev/media0 -p
+Media controller API version 5.15.36
+
+Media device information
+------------------------
+driver          xilinx-video
+model           Xilinx Video Composite Device
+serial          
+bus info        
+hw revision     0x0
+driver version  5.15.36
+
+Device topology
+- entity 1: vcap_tpg_input_v_tpg_0 output 0 (1 pad, 1 link)
+            type Node subtype V4L flags 0
+            device node name /dev/video0
+        pad0: Sink
+                <- "a0130000.v_tpg":1 [ENABLED]
+
+- entity 5: a0130000.v_tpg (2 pads, 1 link)
+            type V4L2 subdev subtype Unknown flags 0
+            device node name /dev/v4l-subdev0
+        pad0: Sink
+                [fmt:RBG888_1X24/1920x1080@1/30 field:none colorspace:srgb]
+        pad1: Source
+                [fmt:RBG888_1X24/1920x1080@1/30 field:none colorspace:srgb]
+                -> "vcap_tpg_input_v_tpg_0 output 0":0 [ENABLED]
+
+root@petalinux:~# modetest -M xlnx -s 41@39:1920x1080-60@BG24
+setting mode 1920x1080-60.00Hz on connectors 41, crtc 39
+[  119.487732] idt8t49n24x 0-007c: idt24x_set_rate. calling idt24x_set_frequency for Q2. rate: 148500000
+
+root@petalinux:~# gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=5 ! video/x-raw, width=1920, height=1080, framerate=60/1, format=RGB! queue max-size-bytes=0 ! kmssink driver-name=xlnx
+Setting pipeline to PAUSED ...
+Pipeline is live and does not need PREROLL ...
+/GstPipeline:pipeline0/GstKMSSink:kmssink0: display-width = 1920
+/GstPipeline:pipeline0/GstKMSSink:kmssink0: display-height = 1080
+Pipeline is PREROLLED ...
+Setting pipeline to PLAYING ...
+ERROR: from element /GstPipeline:pipeline0/GstV4l2Src:v4l2src0: Internal data stream error.
+Additional debug info:
+../git/libs/gst/base/gstbasesrc.c(3127): gst_base_src_loop (): /GstPipeline:pipeline0/GstV4l2Src:v4l2src0:
+streaming stopped, reason not-negotiated (-4)
+ERROR: pipeline doesn't want to preroll.
+Execution ended after 0:00:00.000399750
+Setting pipeline to NULL ...
+Freeing pipeline ...
+
+
+
+
+gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=2 ! video/x-raw, width=1920, height=1080, framerate=60/1, format=RGB! queue max-size-bytes=0 ! videoconvert ! kmssink driver-name=xlnx
+
+
+
+
+modetest -M xlnx -s 41@39:3840x2160-60@BG24
+media-ctl -v -d /dev/media0 -V "\"a0130000.v_tpg\":0 [fmt:RGB888_1X24/3840x2160@1/60 field:none]"
+media-ctl -d /dev/media0 -p
+gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=2 ! video/x-raw, width=3840, height=2160, framerate=60/1, format=RGB! queue max-size-bytes=0 ! videoconvert ! kmssink driver-name=xlnx
+
+```
+
+
+
+```
+gst-launch-1.0 -v \
+  v4l2src device=/dev/video0 io-mode=2 ! \
+  video/x-raw,width=1920,height=1080,format=RGB ! \
+  videoconvert ! \
+  kmssink driver-name=xlnx
+
+Setting pipeline to PAUSED ...
+Pipeline is live and does not need PREROLL ...
+/GstPipeline:pipeline0/GstKMSSink:kmssink0: display-width = 1920
+/GstPipeline:pipeline0/GstKMSSink:kmssink0: display-height = 1080
+Pipeline is PREROLLED ...
+Setting pipeline to PLAYING ...
+New clock: GstSystemClock
+/GstPipeline:pipeline0/GstV4l2Src:v4l2src0.GstPad:src: caps = video/x-raw, width=(int)1920, height=(int)1080, format=(string)RGB, framerate=(fraction)120/1, interlace-mode=(string)progressive, colorimetry=(striB
+/GstPipeline:pipeline0/GstCapsFilter:capsfilter0.GstPad:src: caps = video/x-raw, width=(int)1920, height=(int)1080, format=(string)RGB, framerate=(fraction)120/1, interlace-mode=(string)progressive, colorimetryB
+/GstPipeline:pipeline0/GstVideoConvert:videoconvert0.GstPad:src: caps = video/x-raw, format=(string)NV12, width=(int)1920, height=(int)1080, framerate=(fraction)120/1, interlace-mode=(string)progressive
+/GstPipeline:pipeline0/GstKMSSink:kmssink0.GstPad:sink: caps = video/x-raw, format=(string)NV12, width=(int)1920, height=(int)1080, [ 1101.393185] xilinx-vtc a0120000.v_tc: Failed to set clk rate: 35754000, act8
+framerate=(fraction)120/1, interlace-mode=(string)progressive
+/GstPipeline:pipeline0/GstVideoConvert:videoconvert0.GstPad:sink: caps = video/x-raw, width=(int)1920, height=(int)1080, format=(string)RGB, framerate=(fraction)120/1, interlace-mode=(string)progressive, coloriB
+/GstPipeline:pipeline0/GstCapsFilter:capsfilter0.GstPad:sink: caps = video/x-raw, width=(int)1920, height=(int)1080, format=(string)RGB, framerate=(fraction)120/1, interlace-mode=(string)progressive, colorimetrB
+WARNING: from element /GstPipeline:pipeline0/GstKMSSink:kmssink0: A lot of buffers are being dropped.
+Additional debug info:
+../git/libs/gst/base/gstbasesink.c(3151): gst_base_sink_is_too_late (): /GstPipeline:pipeline0/GstKMSSink:kmssink0:
+There may be a timestamping problem, or this computer is too slow.
+WARNING: from element /GstPipeline:pipeline0/GstKMSSink:kmssink0: A lot of buffers are being dropped.
+Additional debug info:
+../git/libs/gst/base/gstbasesink.c(3151): gst_base_sink_is_too_late (): /GstPipeline:pipeline0/GstKMSSink:kmssink0:
+There may be a timestamping problem, or this computer is too slow.
+WARNING: from element /GstPipeline:pipeline0/GstKMSSink:kmssink0: A lot of buffers are being dropped.
+Additional debug info:
+../git/libs/gst/base/gstbasesink.c(3151): gst_base_sink_is_too_late (): /GstPipeline:pipeline0/GstKMSSink:kmssink0:
+There may be a timestamping problem, or this computer is too slow.
+WARNING: from element /GstPipeline:pipeline0/GstKMSSink:kmssink0: A lot of buffers are being dropped.
+Additional debug info:
+../git/libs/gst/base/gstbasesink.c(3151): gst_base_sink_is_too_late (): /GstPipeline:pipeline0/GstKMSSink:kmssink0:
+There may be a timestamping problem, or this computer is too slow.
+WARNING: from element /GstPipeline:pipeline0/GstKMSSink:kmssink0: A lot of buffers are being dropped.
+Additional debug info:
+../git/libs/gst/base/gstbasesink.c(3151): gst_base_sink_is_too_late (): /GstPipeline:pipeline0/GstKMSSink:kmssink0:
+There may be a timestamping problem, or this computer is too slow.
+WARNING: from element /GstPipeline:pipeline0/GstKMSSink:kmssink0: A lot of buffers are being dropped.
+Additional debug info:
+../git/libs/gst/base/gstbasesink.c(3151): gst_base_sink_is_too_late (): /GstPipeline:pipeline0/GstKMSSink:kmssink0:
+There may be a timestamping problem, or this computer is too slow.
+WARNING: from element /GstPipeline:pipeline0/GstKMSSink:kmssink0: A lot of buffers are being dropped.
+
+```
+
+就显示彩条了.
+
+
+
+`v4l2src io-mode` 对应关系：
+
+| `io-mode` | 含义             |
+| --------- | ---------------- |
+| 0         | `auto`✅          |
+| 1         | `read`❌❌         |
+| 2         | `mmap` ✅         |
+| 3         | `userptr`❌       |
+| 4         | `dmabuf-import`✅ |
+| 5         | `dmabuf `❌       |
+
+❌❌意思是shell无法恢复
+
+❌❌❌系统崩了
+
+
+
+原因估计是`DMA initialization failed`
+
+```bash
+root@petalinux:~# dmesg | grep -i dma                                                                                                                                                                              
+[    0.000000]   DMA32    [mem 0x0000000000000000-0x00000000ffffffff]
+[    0.169511] DMA: preallocated 512 KiB GFP_KERNEL pool for atomic allocations
+[    0.175613] DMA: preallocated 512 KiB GFP_KERNEL|GFP_DMA32 pool for atomic allocations
+[    2.551860] iommu: DMA domain TLB invalidation policy: strict mode 
+[    9.895149] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_0: DMA initialization failed
+[    9.914870] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: DMA initialization failed
+[   10.338230] xilinx-zynqmp-dma fd500000.dma-controller: ZynqMP DMA driver Probe success
+[   10.346325] xilinx-zynqmp-dma fd510000.dma-controller: ZynqMP DMA driver Probe success
+[   10.354410] xilinx-zynqmp-dma fd520000.dma-controller: ZynqMP DMA driver Probe success
+[   10.362516] xilinx-zynqmp-dma fd530000.dma-controller: ZynqMP DMA driver Probe success
+[   10.370597] xilinx-zynqmp-dma fd540000.dma-controller: ZynqMP DMA driver Probe success
+[   10.378678] xilinx-zynqmp-dma fd550000.dma-controller: ZynqMP DMA driver Probe success
+[   10.386767] xilinx-zynqmp-dma fd560000.dma-controller: ZynqMP DMA driver Probe success
+[   10.394848] xilinx-zynqmp-dma fd570000.dma-controller: ZynqMP DMA driver Probe success
+[   10.402996] xilinx-zynqmp-dma ffa80000.dma-controller: ZynqMP DMA driver Probe success
+[   10.411080] xilinx-zynqmp-dma ffa90000.dma-controller: ZynqMP DMA driver Probe success
+[   10.419159] xilinx-zynqmp-dma ffaa0000.dma-controller: ZynqMP DMA driver Probe success
+[   10.427244] xilinx-zynqmp-dma ffab0000.dma-controller: ZynqMP DMA driver Probe success
+[   10.435332] xilinx-zynqmp-dma ffac0000.dma-controller: ZynqMP DMA driver Probe success
+[   10.443411] xilinx-zynqmp-dma ffad0000.dma-controller: ZynqMP DMA driver Probe success
+[   10.451494] xilinx-zynqmp-dma ffae0000.dma-controller: ZynqMP DMA driver Probe success
+[   10.459574] xilinx-zynqmp-dma ffaf0000.dma-controller: ZynqMP DMA driver Probe success
+[   10.467657] xilinx-frmbuf a0030000.v_frmbuf_rd: Xilinx AXI frmbuf DMA_MEM_TO_DEV
+[   10.483784] xilinx-frmbuf a0090000.v_frmbuf_wr: Xilinx AXI frmbuf DMA_DEV_TO_MEM
+[   10.499921] xilinx-frmbuf a0110000.v_frmbuf_wr: Xilinx AXI frmbuf DMA_DEV_TO_MEM
+[   10.982677] mmc0: SDHCI controller on ff160000.mmc [ff160000.mmc] using ADMA 64-bit
+[   10.983128] mmc1: SDHCI controller on ff170000.mmc [ff170000.mmc] using ADMA 64-bit
+[   12.202363] dmaproxy: loading out-of-tree module taints kernel.
+
+```
+
+
+
+总结
+
+> 不论怎么申请的`buffer`, `v_tpg`-> `v_frbf_wr`->`DDR` --- `DDR`->`v_mixer`->`hdmi-txss`, 是能显示彩条的了
+>
+> 目前`v4l2src` 申请 `buffer` 的方式5，`driver` 不支持. 需要解决`DMA initialization failed`的报错
+
+
+
+### 目前的主要问题
+
+**`DMA initialization failed`可能有隐患**.
+
+`vcap_tpg_input_v_tpg_0`看起来和几个参考设计都差不多的构成, 那么应该不是这里的问题.
+
+其实官方论坛也有不少类似的题问
+
+<https://adaptivesupport.amd.com/s/question/0D54U000071JA9ySAG/during-the-bootup-of-linux-many-of-the-dma-entries-fail-to-initialize?language=en_US>
+
+<https://adaptivesupport.amd.com/s/question/0D52E00007ChjnBSAR/dma-initialization-failure?language=ja>
+
+
+
+#### `DMA`问题解决尝试1
+
+`chatGPT`给出的主意: `test0`分支主要节点绑定`dma-coherent`.  结论: **不行!**
+
+```diff
++/ {
++	reserved-memory {
++		#address-cells = <2>;
++		#size-cells = <2>;
++		ranges;
++		cma: cma@34400000 {
++			no-map;
++			reg = <0x0 0x34400000 0x0 0x3E800000>; /* 1000 MiB */
++		};
++	};
++};
+
+...
+
+&tpg_input_v_frmbuf_wr_0 {
+     xlnx,dma-align = <32>;
++    xlnx,dma-coherent;
++    memory-region = <&cma>;
+};
+
+&amba {
+...
+         clock-div = <1>;
+         clock-mult = <1>;
+     };
++    
++	vcap_tpg_input_v_tpg_0 {
++	        xlnx,dma-coherent;
++    		memory-region = <&cma>;
++	};
+ };
+```
+
+结果是`modetest -M xlnx -s 41@39:3840x2160-60@BG24`都没有内存执行了. 看起来不能这样定义`cma`, 会把内核参数的`cma`干掉.
+
+
+
+### `VCU`
 
