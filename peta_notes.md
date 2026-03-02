@@ -51,13 +51,31 @@ petalinux-config --get-hw-description ../vivado/xsa/
 petalinux-config --silentconfig --get-hw-description=../vivado/xsa/
 ```
 
-更新 `xsa` 文件后，需要这样
+更新 `xsa` 文件后，**一定要这样**
 
 ```bash
 petalinux-build -x mrproper
-petalinux-build
+petalinux-build										# == petalinux-build petalinux-image-minimal 
 ```
-避免旧缓存导致 `DTS` 不更新的问题
+避免旧缓存导致 `DTS` 不更新的问题.
+
+下面这样可以用于验证`dts`的修改
+
+```
+petalinux-build -c fsbl-firmware -x cleansstate
+petalinux-build -c device-tree -x cleansstate
+petalinux-build -c device-tree
+```
+
+或许可以避免全部重编译
+
+```
+petalinux-build -c bootloader -x cleansstate
+petalinux-build -c pmu-firmware -x cleansstate
+petalinux-build -c u-boot -x cleansstate
+```
+
+
 
 
 ## 配置本地 `sstate` 和 `downloads` 目录
@@ -157,7 +175,7 @@ PARALLEL_MAKE = "-j2"
 ```bash
 petalinux-build -x clean
 petalinux-build -x cleansstate
-petalinux-build -x mrproper             # 最彻底
+petalinux-build -x mrproper             # 觉得最彻底
 
 petalinux-build -x cleansstate  == bitbake petalinux-image-minimal -c cleansstate
 ```
@@ -166,7 +184,7 @@ petalinux-build -x cleansstate  == bitbake petalinux-image-minimal -c cleansstat
 
 
 
-## 构建完毕后产生目标文件
+## **构建完毕后产生目标文件**
 
 ```bash
 petalinux-package --boot --u-boot --fpga --force
@@ -174,7 +192,7 @@ petalinux-package --boot --u-boot --fpga --force
 
 默认就是`sd`卡启动`ramfs`
 
-`petalinux/images/linux`目录下的这三个文件放到vfat格式的sd卡就可以。记得启动拨码给对。
+`petalinux/images/linux`目录下的这三个文件放到`vfat`格式的`sd/tf`卡就可以。记得启动拨码给对。
 
 ```bash
 boot.scr
@@ -417,9 +435,94 @@ root@petalinux:~# dmesg | grep i2c-gpio
 [    4.682554] i2c-gpio i2c-gpio-1: using lines 472 (SDA) and 473 (SCL)
 [    4.690846] i2c-gpio i2c-gpio-2: using lines 474 (SDA) and 475 (SCL)
 
+zcat /proc/config.gz | grep -i i2c_gpio
+cat /sys/kernel/debug/gpio
+ls /proc/device-tree/i2c-gpio-0
+
+i2cdetect -y -a 0
+i2cdetect -y -a 1
+i2cdetect -y -a 2
 ```
 
+目前的`dts`
+
+```dtd
+    /* 创建 bit-banged I2C 总线 */
+    i2c_gpio0: i2c-gpio-0 {
+        compatible = "i2c-gpio";
+
+        /* GPIO 引脚定义：SDA, SCL 必须是 input/output 皆可的 GPIO */
+        /* SDA = GPIO0, SCL = GPIO1 */
+        sda-gpios = <&xgpio_i2c_0_axi_gpio_0 0 GPIO_ACTIVE_HIGH>;
+        scl-gpios = <&xgpio_i2c_0_axi_gpio_0 1 GPIO_ACTIVE_HIGH>;
+
+        /* 可选：I2C 总线速度 (us)，100kHz = 5us，400kHz = 1.25us */
+        i2c-gpio,delay-us = <5>;
+
+        /* 可选：允许 SDA 读回，用于 bitbanging 协议正确性 */
+        i2c-gpio,sda-open-drain;
+        i2c-gpio,scl-open-drain;
+
+        /* 允许 clock stretching: **默认支持！** 
+             如需强制等待 SCL 释放，可写：
+        */
+        i2c-gpio,stretch-timeout-us = <50000>; /* 50ms */
+
+        #address-cells = <1>;
+        #size-cells = <0>;
+    };
+
+    i2c_gpio1: i2c-gpio-1 {
+        compatible = "i2c-gpio";
+
+        /* SDA = GPIO2, SCL = GPIO3 */
+        sda-gpios = <&xgpio_i2c_0_axi_gpio_0 2 GPIO_ACTIVE_HIGH>;
+        scl-gpios = <&xgpio_i2c_0_axi_gpio_0 3 GPIO_ACTIVE_HIGH>;
+
+        /* 可选：I2C 总线速度 (us)，100kHz = 5us，400kHz = 1.25us */
+        i2c-gpio,delay-us = <5>;
+
+        /* 可选：允许 SDA 读回，用于 bitbanging 协议正确性 */
+        i2c-gpio,sda-open-drain;
+        i2c-gpio,scl-open-drain;
+
+        /* 允许 clock stretching: **默认支持！** 
+             如需强制等待 SCL 释放，可写：
+        */
+        i2c-gpio,stretch-timeout-us = <50000>; /* 50ms */
+
+        #address-cells = <1>;
+        #size-cells = <0>;
+    };
+
+    i2c_gpio2: i2c-gpio-2 {
+        compatible = "i2c-gpio";
+
+        /* SDA = GPIO4, SCL = GPIO5 */
+        sda-gpios = <&xgpio_i2c_0_axi_gpio_0 4 GPIO_ACTIVE_HIGH>;
+        scl-gpios = <&xgpio_i2c_0_axi_gpio_0 5 GPIO_ACTIVE_HIGH>;
+
+        /* 可选：I2C 总线速度 (us)，100kHz = 5us，400kHz = 1.25us */
+        i2c-gpio,delay-us = <5>;
+
+        /* 可选：允许 SDA 读回，用于 bitbanging 协议正确性 */
+        i2c-gpio,sda-open-drain;
+        i2c-gpio,scl-open-drain;
+
+        /* 允许 clock stretching: **默认支持！** 
+             如需强制等待 SCL 释放，可写：
+        */
+        i2c-gpio,stretch-timeout-us = <50000>; /* 50ms */
+
+        #address-cells = <1>;
+        #size-cells = <0>;
+    };
+```
+
+
+
 下面修改无效
+
 ```bash
 &xgpio_i2c_0_axi_gpio_0 {
     xlnx,all-inputs = <0x0>;
@@ -457,7 +560,7 @@ i2ctransfer -f -y 1 w2@0x6c 0x00 0x00 r1
 ```
 
 
-板子上暂时也查看不了波形，放弃使用gpio-i2c
+板子上暂时也查看不了波形，放弃使用`gpio-i2c`. [**后面设置成功了!**]
 
 
 
@@ -6968,6 +7071,689 @@ root@petalinux:~# dmesg | grep -i dma
 ```
 
 结果是`modetest -M xlnx -s 41@39:3840x2160-60@BG24`都没有内存执行了. 看起来不能这样定义`cma`, 会把内核参数的`cma`干掉.
+
+
+
+### milestone: `tpg`显示通过`hdmi-tx`显示
+
+`c717cc3f@port_zr7ev_t1`
+
+关键是`v_mix`的`layer-primary`设置, 其实`layer-streaming`是没有用到的. 实际上`mixer_primary_enable`的`patch`都用不着.
+
+`modetest`彩条`OK`:
+
+```
+modetest -M xlnx -s 41@39:1920x1080-60@AR24							# good
+modetest -M xlnx -s 41@39:1920x1080-60 -P 38@39:1920x1080@BG24		# no disp
+modetest -M xlnx -s 41@39:1920x1080-60 -P 37@39:1920x1080@AR24		# 叠加的disp.
+modetest -M xlnx -s 41@39:1920x1080-60 -P 36@39:1920x1080@UYVY      # good
+modetest -M xlnx -s 41@39:1920x1080-60 -P 35@39:1920x1080@YUYV      # good
+modetest -M xlnx -s 41@39:1920x1080-60 -P 34@39:1920x1080@NV12      # good
+```
+
+`tpg`彩条`OK`
+
+```
+cat /sys/module/xlnx_mixer/parameters/mixer_primary_enable
+Y
+modetest -M xlnx -s 41@39:3840x2160-60@AR24
+
+modetest -M xlnx -s 41@39:1920x1080-60@AR24
+
+modetest -M xlnx -s 41@39:1920x1080-60 -P 36@39:1920x1080@UYVY
+
+media-ctl -v -d /dev/media0 \
+-V "\"a0130000.v_tpg\":0 [fmt:YUYV8_1X16/1920x1080@1/60 field:none]"
+
+media-ctl -d /dev/media0 -p
+
+gst-launch-1.0 \
+v4l2src device=/dev/video0 io-mode=4 ! \
+video/x-raw,format=UYVY,width=1920,height=1080,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=36 sync=false &
+
+gst-launch-1.0 -v \
+v4l2src device=/dev/video0 io-mode=5 do-timestamp=true ! \
+video/x-raw,format=UYVY,width=1920,height=1080,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=36 sync=false &
+
+BASE=0xa0130000
+
+# back ground
+devmem $((BASE+0x020)) 32 9
+devmem $((BASE+0x020)) 32 1
+
+# box size
+devmem $((BASE+0x078)) 32 50
+
+# black box
+devmem $((BASE+0x080)) 32 0
+devmem $((BASE+0x088)) 32 0
+devmem $((BASE+0x090)) 32 0
+
+# Set the speed of the box
+devmem $((BASE+0x038)) 32 1
+
+# enable moving box
+devmem $((BASE+0x028)) 32 1
+
+# Set the speed of the box
+devmem $((BASE+0x038)) 32 5
+
+# Set the speed of the box
+devmem $((BASE+0x038)) 32 10
+
+```
+
+
+
+关于`startx`
+
+```
+root@petalinux:~# startx
+xauth:  file /home/root/.serverauth.869 does not exist
+xauth:  file /home/root/.Xauthority does not exist
+xauth:  file /home/root/.Xauthority does not exist
+
+
+X.Org X Server 1.20.14
+X Protocol Version 11, Revision 0
+Build Operating System: Linux 
+Current Operating System: Linux petalinux 5.15.36-xilinx-v2022.2 #1 SMP Mon Oct 3 07:50:07 UTC 2022 aarch64
+Kernel command line:  earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/ram0 rw cma=1000M earlyprintk uio_pdrv_genirq.of_id=xlnx,generic-uio cpuidle.off=1 cpufreq.off=1 init_fatal_sh=1
+Build Date: 15 December 2021  07:01:48PM
+ 
+Current version of pixman: 0.40.0
+        Before reporting problems, check http://wiki.x.org
+        to make sure that you have the latest version.
+Markers: (--) probed, (**) from config file, (==) default setting,
+        (++) from command line, (!!) notice, (II) informational,
+        (WW) warning, (EE) error, (NI) not implemented, (??) unknown.
+(==) Log file: "/var/log/Xorg.1.log", Time: Tue Feb 10 02:52:40 2026
+(==) Using config file: "/etc/X11/xorg.conf"
+(==) Using system config directory "/usr/share/X11/xorg.conf.d"
+/etc/X11/xinit/xinitrc: line 51: twm: command not found
+/etc/X11/xinit/xinitrc: line 52: xclock: command not found
+虽然有些小报错, 但确实有显示了 有几个白底的shell终端
+```
+
+接`USB`键盘, 无法操作显示器上的几个shell
+
+```
+root@petalinux:~# [  291.695809] usb 1-1.3: new low-speed USB device number 3 using xhci-hcd
+[  291.809917] usb 1-1.3: New USB device found, idVendor=2a7a, idProduct=8a57, bcdDevice= 0.01
+[  291.818285] usb 1-1.3: New USB device strings: Mfr=0, Product=1, SerialNumber=0
+[  291.825596] usb 1-1.3: Product: CASUE USB KB
+[  291.910225] input: CASUE USB KB as /devices/platform/axi/ff9d0000.usb0/fe200000.usb/xhci-hcd.1.auto/usb1/1-1/1-1.3/1-1.3:1.0/0003:2A7A:8A57.0001/input/input0
+[  291.985394] hid-generic 0003:2A7A:8A57.0001: input: USB HID v1.10 Keyboard [CASUE USB KB] on usb-xhci-hcd.1.auto-1.3/input0
+[  292.003436] input: CASUE USB KB Consumer Control as /devices/platform/axi/ff9d0000.usb0/fe200000.usb/xhci-hcd.1.auto/usb1/1-1/1-1.3/1-1.3:1.1/0003:2A7A:8A57.0002/input/input1
+[  292.076000] input: CASUE USB KB System Control as /devices/platform/axi/ff9d0000.usb0/fe200000.usb/xhci-hcd.1.auto/usb1/1-1/1-1.3/1-1.3:1.1/0003:2A7A:8A57.0002/input/input2
+[  292.091477] hid-generic 0003:2A7A:8A57.0002: input: USB HID v1.10 Device [CASUE USB KB] on usb-xhci-hcd.1.auto-1.3/input1
+(EE) event0  - CASUE USB KB: client bug: event processing lagging behind by 13ms, your system is too slow
+[  383.587225] usb 1-1.3: USB disconnect, device number 3
+```
+
+X11 没有启用 evdev / libinput 驱动? 或者在 `/usr/share/X11/xorg.conf.d/` 下的 `10-evdev.conf` 或 `40-libinput.conf`。
+ 如果没有，X11 就不会接收 USB 键盘事件。Xilinx TRD 镜像默认只配置了显示，没有配置输入。
+
+有关内核选项
+
+```
+CONFIG_HID=y
+CONFIG_HID_GENERIC=y
+CONFIG_HID_DEV=y
+CONFIG_HID_USB=y
+CONFIG_INPUT=y
+CONFIG_INPUT_EVDEV=y
+CONFIG_INPUT_KEYBOARD=y
+```
+
+tips: `zcat /proc/config.gz | grep xx`
+
+实际上大多数嵌入式项目不需要X11
+
+使用
+
+`Qt → EGLFS(KMS) → DRM → V-Mix → HDMI`
+
+`Qt EGLFS` 在 `V-Mix` 上点亮
+
+
+
+### port camera sensor
+
+
+
+ref:
+
+<https://github.com/will127534/imx678-v4l2-driver>
+
+<https://github.com/veyeimaging/nvidia_jetson_veye_bsp/tree/dc89d6febf960a43c1b9cfa9a00aac5fe36b9592/drivers_source/cam_drv_src>
+
+
+
+#### 直接连接`imx678`的问题
+
+在裸机调摄像头序列的时候就已经发现问题, 这里`linux`系统情况其实也类似: `xiic`访问连接的`imx678`, 访问几次(一般是5以内), `xiic`的`sr`寄存器必报`bus busy`, 实际波形实际上是`scl`和`sda`大部分情况下最终还是拉高了的
+
+```
+i2cdetect -y -a 2								# axi_iic_0 在自动产生的system-top.dts被alia为i2c2
+i2ctransfer -y -a 2 w2@0x1a 0x30 0x00 r1		# 访问sensor
+
+while true; do i2ctransfer -y -a 2 w2@0x1a 0x30 0x00 r1; done		# 必挂, 挂了之后查询sr寄存器
+```
+
+查询`sr`寄存器
+
+```
+root@petalinux:/media/card# devmem 0xA0000104
+0x000000CC															# bit2: bus busy ? ...
+```
+
+复位`IP`
+
+```
+root@petalinux:~# devmem 0xA0000100 32 0
+root@petalinux:~# devmem 0xA0000100 32 1
+root@petalinux:~# devmem 0xA0000104
+0x000000C0
+root@petalinux:~# i2ctransfer -y -a 2 w2@0x1a 0x30 0x00 r1
+0x01
+```
+
+确实有概率可以恢复. 如果`scl`也拉低了就无法这样恢复(或借助总线调试工具恢复)
+
+这样直接挂`sensor`好像不行.
+
+
+
+#### 直连驱动框架
+
+`2093824c@port_zr7ev_t1`
+
+先给一个`imx678-v4l2-driver`抄过来的一个驱动
+
+````
+$ find . -type f -name "imx274*"
+./drivers/media/i2c/imx274.c
+
+
+`drivers/media/i2c/`位置有
+```
+imx208.c  imx219.c  imx274.c  imx319.c  imx335.c  imx412.c
+imx214.c  imx258.c  imx290.c  imx334.c  imx355.c
+```
+我从哪一个修改比较好?  imx335
+
+
+````
+
+
+
+```
+petalinux-devtool modify linux-xlnx
+
+cd components/yocto/workspace/sources/linux-xlnx/
+修改Kconfig和Makefile
+
+
+git add .
+git commit -m "imx678 camera support"
+cd -
+
+
+petalinux-build -c linux-xlnx -x cleansstate
+petalinux-build -c linux-xlnx
+
+
+```
+
+
+
+```
+modify 后，不 finish/reset，就是直接用 workspace 的源码编译
+
+
+petalinux-devtool reset linux-xlnx
+
+
+petalinux-devtool finish linux-xlnx	${PWD}/project-spec/meta-user
+rm -rf components/yocto/workspace/sources/linux-xlnx
+```
+
+
+
+```
+如果执行过 petalinux-build
+只修改内核 
+petalinux-build -c linux-xlnx -x cleansstate
+petalinux-build -c linux-xlnx
+```
+
+
+
+从下面记录看, `sensor probe`是否成功还不确定. `MIPI graph`和`VIPP pipeline`也不太对
+```
+root@petalinux:~# ls /sys/bus/i2c/devices/2-001a
+modalias  name  of_node  power  subsystem  supplier:platform:a0070000.mipi_csi2_rx_subsystem  supplier:platform:a00b0000.gpio  uevent  waiting_for_supplier
+root@petalinux:~# cat /sys/bus/i2c/devices/2-001a/uevent  
+OF_NAME=sensor
+OF_FULLNAME=/amba_pl@0/i2c@a0000000/sensor@1a
+OF_COMPATIBLE_0=sony,imx678
+OF_COMPATIBLE_N=1
+MODALIAS=of:NsensorT(null)Csony,imx678
+root@petalinux:~# cat /sys/bus/i2c/devices/2-001a/name  
+imx678
+root@petalinux:~# dmesg | grep -i err                                                                                                                           
+[    0.000000] CPU features: detected: ARM erratum 845719
+[    3.420629] armv8-pmu pmu: hw perfevents: no interrupt-affinity property, guessing.
+[   11.770408] EDAC DEVICE0: Giving out device to module edac controller cache_err: DEV edac (POLLED)
+[   11.779346] EDAC DEVICE1: Giving out device to module zynqmp-ocm-edac controller zynqmp_ocm: DEV ff960000.memory-controller (INTERRUPT)
+[   11.797433] sdhci: Copyright(c) Pierre Ossman
+[   12.297786] xlnx,scaler-bridge: probe of a00c0000.v_proc_ss failed with error -22
+root@petalinux:~# dmesg | grep -i imx
+root@petalinux:~# dmesg | grep -i cam
+root@petalinux:~# v4l2-ctl --list-devices
+vcap_mipi_csi2_rx_v_proc_ss_0 o (platform:vcap_mipi_csi2_rx_v_pr):
+        /dev/video0
+
+vcap_tpg_input_v_tpg_0 output 0 (platform:vcap_tpg_input_v_tpg_0):
+        /dev/video1
+
+Xilinx Video Composite Device (platform:xilinx-video):
+        /dev/media0
+
+root@petalinux:~# v4l2-ctl -d /dev/video0 --all
+Driver Info:
+        Driver name      : xilinx-vipp
+        Card type        : vcap_mipi_csi2_rx_v_proc_ss_0 o
+        Bus info         : platform:vcap_mipi_csi2_rx_v_pr
+        Driver version   : 5.15.36
+        Capabilities     : 0x84201000
+                Video Capture Multiplanar
+                Streaming
+                Extended Pix Format
+                Device Capabilities
+        Device Caps      : 0x04201000
+                Video Capture Multiplanar
+                Streaming
+                Extended Pix Format
+Priority: 2
+Video input : 0
+Format Video Capture Multiplanar:
+        Width/Height      : 1920/0
+        Pixel Format      : 'YUYV'
+        Field             : None
+        Number of planes  : 0
+        Flags             : 
+        Colorspace        : sRGB
+        Transfer Function : Default
+        YCbCr/HSV Encoding: Default
+        Quantization      : Default
+Selection Video Capture: compose, Left 0, Top 0, Width 0, Height 0, Flags: 
+Selection Video Capture: compose_default, Left 0, Top 0, Width 1920, Height 0, Flags: 
+Selection Video Capture: compose_bounds, Left 0, Top 0, Width 1920, Height 0, Flags: 
+Selection Video Output: crop, Left 0, Top 0, Width 0, Height 0, Flags: 
+Selection Video Output: crop_default, Left 0, Top 0, Width 1920, Height 0, Flags: 
+Selection Video Output: crop_bounds, Left 0, Top 0, Width 1920, Height 0, Flags: 
+
+User Controls
+
+  red_gamma_correction_1_0_1_10 0x0098c9c1 (int)    : min=1 max=40 step=1 default=10 value=10 flags=slider
+ blue_gamma_correction_1_0_1_10 0x0098c9c2 (int)    : min=1 max=40 step=1 default=10 value=10 flags=slider
+ green_gamma_correction_1_0_1_1 0x0098c9c3 (int)    : min=1 max=40 step=1 default=10 value=10 flags=slider
+           low_latency_controls 0x0098ca21 (int)    : min=2 max=8 step=1 default=4 value=4
+
+root@petalinux:~# media-ctl -p
+Media controller API version 5.15.36
+
+Media device information
+------------------------
+driver          xilinx-video
+model           Xilinx Video Composite Device
+serial          
+bus info        
+hw revision     0x0
+driver version  5.15.36
+
+Device topology
+- entity 1: vcap_tpg_input_v_tpg_0 output 0 (1 pad, 1 link)
+            type Node subtype V4L flags 0
+            device node name /dev/video1
+        pad0: Sink
+                <- "a0130000.v_tpg":1 [ENABLED]
+
+- entity 5: a0130000.v_tpg (2 pads, 1 link)
+            type V4L2 subdev subtype Unknown flags 0
+            device node name /dev/v4l-subdev0
+        pad0: Sink
+                [fmt:UYVY8_1X16/0x0@1/30 field:none colorspace:srgb]
+        pad1: Source
+                [fmt:UYVY8_1X16/0x0@1/30 field:none colorspace:srgb]
+                -> "vcap_tpg_input_v_tpg_0 output 0":0 [ENABLED]
+
+root@petalinux:~# dmesg | grep async
+root@petalinux:~# dmesg | grep xilinx
+[    0.000000] Linux version 5.15.36-xilinx-v2022.2 (oe-user@oe-host) (aarch64-xilinx-linux-gcc (GCC) 11.2.0, GNU ld (GNU Binutils) 2.37.20210721) #1 SMP Mon Oct 3 07:50:07 UTC 2022
+[   11.651916] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_0: /amba_pl@0/vcap_mipi_csi2_rx_v_proc_ss_0/ports/port@0 initialization failed
+[   11.664048] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_0: DMA initialization failed
+[   11.672394] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: /amba_pl@0/vcap_tpg_input_v_tpg_0/ports/port@0 initialization failed
+[   11.683770] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: DMA initialization failed
+[   11.870784] alg: No test for xilinx-zynqmp-aes (zynqmp-aes)
+[   11.898035] alg: No test for xilinx-keccak-384 (zynqmp-keccak-384)
+[   11.904306] alg: No test for xilinx-zynqmp-rsa (zynqmp-rsa)
+[   12.107108] xilinx-zynqmp-dma fd500000.dma-controller: ZynqMP DMA driver Probe success
+[   12.115198] xilinx-zynqmp-dma fd510000.dma-controller: ZynqMP DMA driver Probe success
+[   12.123284] xilinx-zynqmp-dma fd520000.dma-controller: ZynqMP DMA driver Probe success
+[   12.131375] xilinx-zynqmp-dma fd530000.dma-controller: ZynqMP DMA driver Probe success
+[   12.139467] xilinx-zynqmp-dma fd540000.dma-controller: ZynqMP DMA driver Probe success
+[   12.147552] xilinx-zynqmp-dma fd550000.dma-controller: ZynqMP DMA driver Probe success
+[   12.155650] xilinx-zynqmp-dma fd560000.dma-controller: ZynqMP DMA driver Probe success
+[   12.163730] xilinx-zynqmp-dma fd570000.dma-controller: ZynqMP DMA driver Probe success
+[   12.171882] xilinx-zynqmp-dma ffa80000.dma-controller: ZynqMP DMA driver Probe success
+[   12.179971] xilinx-zynqmp-dma ffa90000.dma-controller: ZynqMP DMA driver Probe success
+[   12.188055] xilinx-zynqmp-dma ffaa0000.dma-controller: ZynqMP DMA driver Probe success
+[   12.196145] xilinx-zynqmp-dma ffab0000.dma-controller: ZynqMP DMA driver Probe success
+[   12.204234] xilinx-zynqmp-dma ffac0000.dma-controller: ZynqMP DMA driver Probe success
+[   12.212322] xilinx-zynqmp-dma ffad0000.dma-controller: ZynqMP DMA driver Probe success
+[   12.220406] xilinx-zynqmp-dma ffae0000.dma-controller: ZynqMP DMA driver Probe success
+[   12.228491] xilinx-zynqmp-dma ffaf0000.dma-controller: ZynqMP DMA driver Probe success
+[   12.236575] xilinx-frmbuf a0030000.v_frmbuf_rd: Xilinx AXI frmbuf DMA_MEM_TO_DEV
+[   12.244031] xilinx-frmbuf a0030000.v_frmbuf_rd: Xilinx AXI FrameBuffer Engine Driver Probed!!
+[   12.252711] xilinx-frmbuf a0090000.v_frmbuf_wr: Xilinx AXI frmbuf DMA_DEV_TO_MEM
+[   12.260181] xilinx-frmbuf a0090000.v_frmbuf_wr: Xilinx AXI FrameBuffer Engine Driver Probed!!
+[   12.268858] xilinx-frmbuf a0110000.v_frmbuf_wr: Xilinx AXI frmbuf DMA_DEV_TO_MEM
+[   12.276309] xilinx-frmbuf a0110000.v_frmbuf_wr: Xilinx AXI FrameBuffer Engine Driver Probed!!
+[   12.312566] xilinx-vpss-scaler a00c0000.v_proc_ss: Num Hori Taps 8
+[   12.318748] xilinx-vpss-scaler a00c0000.v_proc_ss: Num Vert Taps 8
+[   12.324918] xilinx-vpss-scaler a00c0000.v_proc_ss: VPSS Scaler Probe Successful
+[   12.385965] xilinx-axipmon ffa00000.perf-monitor: Probed Xilinx APM
+[   12.392518] xilinx-axipmon fd0b0000.perf-monitor: Probed Xilinx APM
+[   12.399013] xilinx-axipmon fd490000.perf-monitor: Probed Xilinx APM
+[   12.405501] xilinx-axipmon ffa10000.perf-monitor: Probed Xilinx APM
+[   12.496653] usb usb1: Manufacturer: Linux 5.15.36-xilinx-v2022.2 xhci-hcd
+[   12.564933] usb usb2: Manufacturer: Linux 5.15.36-xilinx-v2022.2 xhci-hcd
+[   12.674536] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_0: Entity type for entity a00c0000.v_proc_ss was not initialized!
+[   12.686101] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_0: device registered
+[   12.694030] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: device registered
+[   12.701435] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_0: Entity type for entity a0070000.mipi_csi2_rx_subsystem was not initialized!
+[   12.714400] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_0: Entity type for entity a0080000.v_demosaic was not initialized!
+[   12.726052] xilinx-demosaic a0080000.v_demosaic: Xilinx Video Demosaic Probe Successful
+[   12.734449] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_0: Entity type for entity a00a0000.v_gamma_lut was not initialized!
+[   12.746181] xilinx-gamma-lut a00a0000.v_gamma_lut: Xilinx 8-bit Video Gamma Correction LUT registered
+[   12.756003] xilinx-vtc a0120000.v_tc: device found, version 6.020
+[   12.769202] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: Entity type for entity a0130000.v_tpg was not initialized!
+[   15.301423] xilinx-vphy a0150000.vid_phy_controller: probe started
+[   15.307963] xilinx-vphy a0150000.vid_phy_controller: VPhy version : 02.02 (0000)
+[   15.337691] xilinx-vcu a0240000.vcu: could not find xlnx,vcu-settings: trying direct register access
+[   15.346983] xilinx-vphy a0150000.vid_phy_controller: probe successful
+[   15.467480] xlnx-drm xlnx-drm.0: bound a0040000.v_hdmi_tx_ss (ops xlnx_drm_hdmi_component_ops [xilinx_hdmi_tx])
+root@petalinux:~# ls /dev/v4l-subdev*
+/dev/v4l-subdev0
+
+
+```
+
+
+
+怎么办? 
+
+A. `bitbang-i2c`方案
+
+如果解出内核源码了, 可以看到文档`Documentation/devicetree/bindings/i2c/i2c-gpio.yaml`
+
+```
+andy@andy-zirui:~/workdir/zirui/06_vcu_trd_port/tmp/test/petalinux/components/yocto/workspace/sources/linux-xlnx
+$ gedit ./Documentation/devicetree/bindings/i2c/i2c-gpio.yaml
+```
+
+
+
+提到要这样设置
+
+```
+sda-gpios = <&xgpio_i2c_0_axi_gpio_0 0 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+scl-gpios = <&xgpio_i2c_0_axi_gpio_0 1 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+```
+
+而上一回尝试还是
+
+```
+sda-gpios = <&xgpio_i2c_0_axi_gpio_0 0 GPIO_ACTIVE_HIGH>;
+scl-gpios = <&xgpio_i2c_0_axi_gpio_0 1 GPIO_ACTIVE_HIGH>;
+```
+
+实际是推挽输出（`push-pull`）
+
+> 输出 1 → 强驱动高
+>
+> 输出 0 → 强驱动低
+
+ I2C 的正确行为应该是：
+
+| 操作   | GPIO 行为      |
+| ------ | -------------- |
+| 输出 0 | 拉低           |
+| 输出 1 | 释放（高阻态） |
+
+可以测试一下. 如果能成功访问总线设备, 那么`gpio`模拟的`i2c`是肯定可以访问`sensor`的.
+
+
+
+B. 放弃直连, 先搞通`vbyone serdes`
+
+测了`bitbang-i2c`方案再说了.
+
+
+
+#### `bitbang-i2c`**方案再尝试(OK)**
+
+记录1
+
+```
+dts是生效了
+root@petalinux:/proc/device-tree/i2c-gpio-0# ls
+#address-cells  #size-cells  compatible  i2c-gpio,delay-us  i2c-gpio,scl-open-drain  i2c-gpio,sda-open-drain  i2c-gpio,stretch-timeout-us  name  phandle  scl-gpios  sda-gpios sensor@1a  status
+root@petalinux:/proc/device-tree/i2c-gpio-0# cat status 
+
+但是看看内核选项
+root@petalinux:/proc/device-tree/i2c-gpio-0# zcat /proc/config.gz | grep -i i2c_gpio                   
+# CONFIG_I2C_GPIO is not set
+
+为啥没生效呢
+
+project-spec/meta-user/recipes-kernel/linux/linux-xlnx/bsp.cfg
+project-spec/meta-user/recipes-kernel/linux/linux-xlnx_%.bbappend
+修改之后要在 petalinux-config -c kernel 去确认
+
+
+cat /sys/kernel/debug/gpio
+gpiochip3: GPIOs 438-443, parent: platform/a0000000.gpio, a0000000.gpio:
+ gpio-438 (                    |sda                 ) out lo 
+ gpio-439 (                    |scl                 ) out lo 
+ gpio-440 (                    |sda                 ) out lo 
+ gpio-441 (                    |scl                 ) out lo 
+ gpio-442 (                    |sda                 ) out lo 
+ gpio-443 (                    |scl                 ) out lo
+
+
+
+ls /sys/bus/platform/drivers/i2c-gpio/
+amba_pl@0:i2c-gpio-0  amba_pl@0:i2c-gpio-1  amba_pl@0:i2c-gpio-2  bind  uevent  unbind
+
+echo amba_pl@0:i2c-gpio-0 > /sys/bus/platform/drivers/i2c-gpio/unbind	# 解绑
+cat /sys/kernel/debug/gpio
+gpiochip3: GPIOs 438-443, parent: platform/a0000000.gpio, a0000000.gpio:
+ gpio-440 (                    |sda                 ) out lo 
+ gpio-441 (                    |scl                 ) out lo 
+ gpio-442 (                    |sda                 ) out lo 
+ gpio-443 (                    |scl                 ) out lo 
+
+
+echo 438 > /sys/class/gpio/export
+echo out > /sys/class/gpio/gpio438/direction
+echo 0 > /sys/class/gpio/gpio438/value
+echo 1 > /sys/class/gpio/gpio438/value
+电平无变化?
+
+echo in > /sys/class/gpio/gpio438/direction
+cat /sys/class/gpio/gpio438/value
+0
+不对!!
+
+echo amba_pl@0:i2c-gpio-0 > /sys/bus/platform/drivers/i2c-gpio/bind		# 重新加载 
+
+
+
+root@petalinux:/sys/bus# devmem 0xA0140000                                                                                     0x00000002
+root@petalinux:/sys/bus# devmem 0xA0140004
+0xFFFFFFFF
+root@petalinux:/sys/bus# devmem 0xA00B0004                                                                                     
+0xFFFFFFFF
+root@petalinux:/sys/bus# devmem 0xA00B0000
+0xFFFFFFF7
+root@petalinux:/sys/bus# devmem 0xA0000000
+0x00000000
+root@petalinux:/sys/bus# devmem 0xA0000004
+0x00000000
+root@petalinux:/sys/bus# devmem 0xA0000000 32 0xffffffff
+root@petalinux:/sys/bus# devmem 0xA0000000
+0x00000000
+root@petalinux:/sys/bus# devmem 0xA0000000 32 0xffffffff
+root@petalinux:/sys/bus# devmem 0xA0000000
+0x00000000
+
+
+root@petalinux:/sys/bus# cat /proc/iomem | grep gpio
+a0000000-a000ffff : a0000000.gpio gpio@a0000000
+a00b0000-a00bffff : a00b0000.gpio gpio@a00b0000
+a0140000-a014ffff : a0140000.gpio gpio@a0140000
+ff0a0000-ff0a0fff : ff0a0000.gpio gpio@ff0a0000
+
+
+感觉bitstream文件没有替换成功?? 以后重新制作xsa要给版本号, 导入xsa要执行清理......想省时间却最浪费时间.
+```
+
+
+
+记录2
+
+```
+root@petalinux:/proc/device-tree/i2c-gpio-0# zcat /proc/config.gz | grep -i imx678
+# CONFIG_VIDEO_IMX678 is not set
+只修改project-spec/meta-user/recipes-kernel/linux/linux-xlnx/*是不会自动生效的.
+内核选项对`CONFIG_VIDEO_IMX678`生效情况下, 编译报大量错. IMX678从xilinx的内核源码修改imx335的再修改
+现在调试 `gpio i2c`, 暂时不选`CONFIG_VIDEO_IMX678`就是
+```
+
+
+
+记录3, `a0f871e1@port_zr7ev_t2`
+
+```
+艹, 忘了执行`petalinux-package --boot --u-boot --fpga --force`
+ 
+这下可以了
+i2cdetect -y -a 0
+```
+
+要点: `gpio`的`flag`要设置成`(GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)`
+
+```dtd
+&amba_pl {
+
+    /* 创建 bit-banged I2C 总线 */
+    i2c_gpio0: i2c-gpio-0 {
+        compatible = "i2c-gpio";
+
+        /* GPIO 引脚定义：SDA, SCL 必须是 input/output 皆可的 GPIO */
+        /* SDA = GPIO0, SCL = GPIO1 */
+        sda-gpios = <&xgpio_i2c_0_axi_gpio_0 0 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+        scl-gpios = <&xgpio_i2c_0_axi_gpio_0 1 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+
+        /* 可选：I2C 总线速度 (us)，100kHz = 5us，400kHz = 1.25us */
+        i2c-gpio,delay-us = <5>;
+
+        /* 可选：允许 SDA 读回，用于 bitbanging 协议正确性 */
+        i2c-gpio,sda-open-drain;
+        i2c-gpio,scl-open-drain;
+
+        /* 允许 clock stretching: **默认支持！** 
+             如需强制等待 SCL 释放，可写：
+        */
+        i2c-gpio,stretch-timeout-us = <50000>; /* 50ms */
+
+        #address-cells = <1>;
+        #size-cells = <0>;
+    };
+
+    i2c_gpio1: i2c-gpio-1 {
+        compatible = "i2c-gpio";
+
+        /* SDA = GPIO2, SCL = GPIO3 */
+        sda-gpios = <&xgpio_i2c_0_axi_gpio_0 2 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+        scl-gpios = <&xgpio_i2c_0_axi_gpio_0 3 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+
+        /* 可选：I2C 总线速度 (us)，100kHz = 5us，400kHz = 1.25us */
+        i2c-gpio,delay-us = <5>;
+
+        /* 可选：允许 SDA 读回，用于 bitbanging 协议正确性 */
+        i2c-gpio,sda-open-drain;
+        i2c-gpio,scl-open-drain;
+
+        /* 允许 clock stretching: **默认支持！** 
+             如需强制等待 SCL 释放，可写：
+        */
+        i2c-gpio,stretch-timeout-us = <50000>; /* 50ms */
+
+        #address-cells = <1>;
+        #size-cells = <0>;
+    };
+
+    i2c_gpio2: i2c-gpio-2 {
+        compatible = "i2c-gpio";
+
+        /* SDA = GPIO4, SCL = GPIO5 */
+        sda-gpios = <&xgpio_i2c_0_axi_gpio_0 4 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+        scl-gpios = <&xgpio_i2c_0_axi_gpio_0 5 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+
+        /* 可选：I2C 总线速度 (us)，100kHz = 5us，400kHz = 1.25us */
+        i2c-gpio,delay-us = <5>;
+
+        /* 可选：允许 SDA 读回，用于 bitbanging 协议正确性 */
+        i2c-gpio,sda-open-drain;
+        i2c-gpio,scl-open-drain;
+
+        /* 允许 clock stretching: **默认支持！** 
+             如需强制等待 SCL 释放，可写：
+        */
+        i2c-gpio,stretch-timeout-us = <50000>; /* 50ms */
+
+        #address-cells = <1>;
+        #size-cells = <0>;
+    };
+    
+};
+```
+
+#### 直连` imx678 `驱动调试
+
+常用`i2c`操作命令
+
+```
+i2ctransfer -f -y 1 w2@0x6c 0x00 0x00 r1            # 读 16-bit 地址 + 8-bit 数据
+i2ctransfer -y -a 1 w2@0x7c 0x00 0x20 r4            # 读 16-bit 地址 + 4-Byte 数据
+i2ctransfer -y -a 1 w3@0x7c 0x00 0x20 0x5A          # 16-bit寄存器地址写单字节数据
+i2ctransfer -y -a 1 w4@0x7c 0x00 0x20 0x12 0x34     # 16-bit寄存器地址写2字节数据
+```
+
+
+
+
+
+
 
 
 
