@@ -188,6 +188,16 @@ petalinux-build -x cleansstate  == bitbake petalinux-image-minimal -c cleansstat
 
 ```bash
 petalinux-package --boot --u-boot --fpga --force
+
+==
+petalinux-package --boot \
+ --fsbl images/linux/zynqmp_fsbl.elf \
+ --u-boot \
+ --pmufw images/linux/pmufw.elf \
+ --fpga images/linux/system.bit \
+ --force
+ 
+ ls -lh images/linux/BOOT.BIN		# 检查BOOT.BIN的时间戳
 ```
 
 默认就是`sd`卡启动`ramfs`
@@ -7334,6 +7344,40 @@ petalinux-build -c linux-xlnx
 
 
 
+记录`dts`里用到的`formats`
+
+````
+petalinux/components/yocto/workspace/sources/linux-xlnx/include/dt-bindings/media/xilinx-vip.h
+```
+#define XVIP_VF_YUV_422			0
+#define XVIP_VF_YUV_444			1
+#define XVIP_VF_RBG			2
+#define XVIP_VF_YUV_420			3
+#define XVIP_VF_YUVA_422		4
+#define XVIP_VF_YUVA_444		5
+#define XVIP_VF_RGBA			6
+#define XVIP_VF_YUVA_420		7
+#define XVIP_VF_YUVD_422		8
+#define XVIP_VF_YUVD_444		9
+#define XVIP_VF_RGBD			10
+#define XVIP_VF_YUVD_420		11
+#define XVIP_VF_MONO_SENSOR		12
+#define XVIP_VF_CUSTOM2			13
+#define XVIP_VF_CUSTOM3			14
+#define XVIP_VF_CUSTOM4			15
+#define XVIP_VF_VUY_422			16
+#define XVIP_VF_BGRX			17
+#define XVIP_VF_YUVX			18
+#define XVIP_VF_XBGR			19
+#define XVIP_VF_Y_GREY			20
+#define XVIP_VF_XRGB			21
+```
+````
+
+
+
+
+
 从下面记录看, `sensor probe`是否成功还不确定. `MIPI graph`和`VIPP pipeline`也不太对
 ```
 root@petalinux:~# ls /sys/bus/i2c/devices/2-001a
@@ -7747,7 +7791,3015 @@ i2ctransfer -f -y 1 w2@0x6c 0x00 0x00 r1            # 读 16-bit 地址 + 8-bit 
 i2ctransfer -y -a 1 w2@0x7c 0x00 0x20 r4            # 读 16-bit 地址 + 4-Byte 数据
 i2ctransfer -y -a 1 w3@0x7c 0x00 0x20 0x5A          # 16-bit寄存器地址写单字节数据
 i2ctransfer -y -a 1 w4@0x7c 0x00 0x20 0x12 0x34     # 16-bit寄存器地址写2字节数据
+
+i2cdetect -y -a 0
+i2ctransfer -f -y 0 w2@0x1a 0x39 0x12 r1
 ```
+
+延后及模块式加载
+
+````
+petalinux/components/yocto/workspace/sources/linux-xlnx/Documentation/devicetree/bindings/media/i2c/sony,imx335.yaml
+
+```
+    imx678: sensor@1a{
+        compatible = "sony,imx678";
+        reg = <0x1a>;
+        #address-cells = <1>;
+        #size-cells = <0>;
+        clocks = <&cam0_clk>;
+	
+        reset-gpios = <&rest_gpio 1 1>;
+	
+        port@0 {
+	    reg = <0>;
+	    
+	    sensor_out: endpoint {
+	        remote-endpoint = <&mipi_csi_inmipi_csi2_rx_mipi_csi2_rx_subsyst_0>;
+	        clock-lanes = <0>;
+	        data-lanes = <1 2 3 4>;
+	        link-frequencies = /bits/ 64 <720000000>;
+	        };
+        };
+    };
+```
+
+petalinux-config -c kernel
+
+
+
+v4l2-ctl --list-devices
+
+v4l2-ctl -d /dev/video0 --all
+
+media-ctl -p
+
+ls /dev/v4l-subdev*
+
+zcat /proc/config.gz | grep -i imx678
+
+
+
+
+
+
+
+我看dmesg这里有问题, sensor 为什么先于 i2c-gpio 总线进行配置了? 这样不行吧, 怎么让 imx678: probe 向后移动呢
+```
+[   11.444109] i2c 0-001a: Fixing up cyclic dependency with a0070000.mipi_csi2_rx_subsystem
+[   11.456313] imx678 0-001a: failed to find sensor: -5
+[   11.461287] imx678: probe of 0-001a failed with error -5
+[   11.468359] i2c-gpio amba_pl@0:i2c-gpio-0: using lines 438 (SDA) and 439 (SCL)
+[   11.476064] idt8t49n24x 1-007c: idt24x_probe
+[   11.582741] idt8t49n24x 1-007c: idt24x_read_from_hw: initial values read from chip successfully
+[   11.592377] idt8t49n24x 1-007c: probe success. input freq: 40000000Hz (XTAL), settings string? true
+[   11.603272] i2c-gpio amba_pl@0:i2c-gpio-1: using lines 440 (SDA) and 441 (SCL)
+[   11.612588] i2c-gpio amba_pl@0:i2c-gpio-2: using lines 442 (SDA) and 443 (SCL)
+[   11.619906] of-fpga-region fpga-full: FPGA Region probed
+```
+修改
+```
+static int imx678_detect(struct imx678 *imx678)
+{
+	int ret;
+	u32 val;
+
+	ret = imx678_read_reg(imx678, IMX678_REG_ID, 2, &val);
+	if (ret) {
+        if (ret == -EIO || ret == -ENXIO || ret == -ETIMEDOUT) // +
+            return -EPROBE_DEFER;                              // +
+        return ret;
+    }
+    
+	if (val != IMX678_ID) {
+		dev_err(imx678->dev, "chip id mismatch: %x!=%x",
+			IMX678_ID, val);
+		return -ENXIO;
+	}
+
+	return 0;
+}
+```
+之后
+```
+root@petalinux:~# i2cdetect -y -a 0
+     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f
+00: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+10: -- -- -- -- -- -- -- -- -- -- 1a -- -- -- -- -- 
+20: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+30: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+40: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+50: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+60: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+70: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+root@petalinux:~# dmesg | grep -i imx                                                                                                                                                                              
+[   11.458544] imx678 0-001a: failed to find sensor: -517
+[   12.106924] imx678 0-001a: failed to find sensor: -517
+[   12.127964] imx678 0-001a: failed to find sensor: -517
+[   12.138248] imx678 0-001a: failed to find sensor: -517
+[   12.172914] imx678 0-001a: failed to find sensor: -517
+[   12.241864] imx678 0-001a: failed to find sensor: -517
+[   12.252187] imx678 0-001a: failed to find sensor: -517
+[   12.444684] imx678 0-001a: failed to find sensor: -517
+[   12.758183] imx678 0-001a: failed to find sensor: -517
+[   12.838752] imx678 0-001a: failed to find sensor: -517
+[   13.208113] imx678 0-001a: failed to find sensor: -517
+[   13.213963] imx678 0-001a: failed to find sensor: -517
+[   14.702788] imx678 0-001a: failed to find sensor: -517
+[   14.747531] imx678 0-001a: failed to find sensor: -517
+[   14.794948] imx678 0-001a: failed to find sensor: -517
+[   14.828972] imx678 0-001a: failed to find sensor: -517
+[   14.851863] imx678 0-001a: failed to find sensor: -517
+[   14.876799] imx678 0-001a: failed to find sensor: -517
+[   16.044347] imx678 0-001a: failed to find sensor: -517
+```
+
+
+
+删掉：
+
+module_i2c_driver(imx678_driver);   // 等价于 module_init(imx678_init);+module_exit(imx678_exit);
+
+手动写 init/exit
+static int __init imx678_init(void)
+{
+    return i2c_add_driver(&imx678_i2c_driver);
+}
+
+static void __exit imx678_exit(void)
+{
+    i2c_del_driver(&imx678_i2c_driver);
+}
+
+late_initcall(imx678_init);
+module_exit(imx678_exit);
+
+
+一样, 启动过程 34地址无ack
+
+
+
+
+
+检测sensor复位信号:
+启动过程拉低了几次...
+
+
+那么 reset-gpios = <&rest_gpio 1 1>; 的flag是否正确?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+strings image.ub | grep -i imx678
+dtc -I dtb -O dts -@ -o system.dts system.dtb
+grep -R "imx678" system.dts
+
+
+
+
+
+
+CONFIG_VIDEO_IMX678=m
+
+modprobe imx678
+
+但是CONFIG_VIDEO_IMX678=m之后,编译出的镜像还是CONFIG_VIDEO_IMX678=y,petalinux-config -c kernel再查看还是y而不是m. 我很确定保存过配置的.
+
+
+
+
+user.cfg 已经修改为 =m 但是
+
+petalinux-build -c kernel -x cleansstate
+petalinux-build
+
+
+cat build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+git999-r0/linux-xlnx-5.15.36+git999/.config | grep IMX678
+
+还是=y
+
+
+
+peta目录查找
+grep -R "CONFIG_VIDEO_IMX678=y" .
+
+```
+./build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+git999-r0/linux-xlnx-5.15.36+git999/source/.kernel-meta/configs/bsp.cfg:CONFIG_VIDEO_IMX678=y
+./build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+git999-r0/linux-xlnx-5.15.36+git999/source/.kernel-meta/cfg/merge_config_build.log:New value: CONFIG_VIDEO_IMX678=y
+./build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+git999-r0/linux-xlnx-5.15.36+git999/source/.config.new:CONFIG_VIDEO_IMX678=y
+./build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+git999-r0/linux-xlnx-5.15.36+git999/source/oe-local-files/bsp.cfg:CONFIG_VIDEO_IMX678=y
+./build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+git999-r0/linux-xlnx-5.15.36+git999/source/.config.baseline:CONFIG_VIDEO_IMX678=y
+./build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+git999-r0/linux-xlnx-5.15.36+git999/include/config/auto.conf:CONFIG_VIDEO_IMX678=y
+./build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+git999-r0/linux-xlnx-5.15.36+git999/.config.old:CONFIG_VIDEO_IMX678=y
+./build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+git999-r0/linux-xlnx-5.15.36+git999/.config:CONFIG_VIDEO_IMX678=y
+./build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+git999-r0/linux-xlnx-5.15.36+git999/kernel/config_data:CONFIG_VIDEO_IMX678=y
+./build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+git999-r0/package/boot/config-5.15.36-xilinx-v2022.2:CONFIG_VIDEO_IMX678=y
+./build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+git999-r0/packages-split/kernel-dev/boot/config-5.15.36-xilinx-v2022.2:CONFIG_VIDEO_IMX678=y
+./build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+git999-r0/image/boot/config-5.15.36-xilinx-v2022.2:CONFIG_VIDEO_IMX678=y
+./build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+git999-r0/bsp.cfg:CONFIG_VIDEO_IMX678=y
+./build/tmp/work-shared/zynqmp-generic/kernel-build-artifacts/.config:CONFIG_VIDEO_IMX678=y
+./build/tmp/work-shared/zynqmp-generic/kernel-source/.kernel-meta/configs/bsp.cfg:CONFIG_VIDEO_IMX678=y
+./build/tmp/work-shared/zynqmp-generic/kernel-source/.kernel-meta/cfg/merge_config_build.log:New value: CONFIG_VIDEO_IMX678=y
+./build/tmp/work-shared/zynqmp-generic/kernel-source/.config.new:CONFIG_VIDEO_IMX678=y
+./build/tmp/work-shared/zynqmp-generic/kernel-source/oe-workdir/linux-xlnx-5.15.36+git999/include/config/auto.conf:CONFIG_VIDEO_IMX678=y
+./build/tmp/work-shared/zynqmp-generic/kernel-source/oe-workdir/linux-xlnx-5.15.36+git999/.config.old:CONFIG_VIDEO_IMX678=y
+./build/tmp/work-shared/zynqmp-generic/kernel-source/oe-workdir/linux-xlnx-5.15.36+git999/.config:CONFIG_VIDEO_IMX678=y
+./build/tmp/work-shared/zynqmp-generic/kernel-source/oe-workdir/linux-xlnx-5.15.36+git999/kernel/config_data:CONFIG_VIDEO_IMX678=y
+./build/tmp/work-shared/zynqmp-generic/kernel-source/oe-workdir/package/boot/config-5.15.36-xilinx-v2022.2:CONFIG_VIDEO_IMX678=y
+./build/tmp/work-shared/zynqmp-generic/kernel-source/oe-workdir/packages-split/kernel-dev/boot/config-5.15.36-xilinx-v2022.2:CONFIG_VIDEO_IMX678=y
+./build/tmp/work-shared/zynqmp-generic/kernel-source/oe-workdir/image/boot/config-5.15.36-xilinx-v2022.2:CONFIG_VIDEO_IMX678=y
+./build/tmp/work-shared/zynqmp-generic/kernel-source/oe-workdir/bsp.cfg:CONFIG_VIDEO_IMX678=y
+./build/tmp/work-shared/zynqmp-generic/kernel-source/oe-local-files/bsp.cfg:CONFIG_VIDEO_IMX678=y
+./build/tmp/work-shared/zynqmp-generic/kernel-source/.config.baseline:CONFIG_VIDEO_IMX678=y
+./components/yocto/workspace/sources/linux-xlnx/.kernel-meta/configs/bsp.cfg:CONFIG_VIDEO_IMX678=y
+./components/yocto/workspace/sources/linux-xlnx/.kernel-meta/cfg/merge_config_build.log:New value: CONFIG_VIDEO_IMX678=y
+./components/yocto/workspace/sources/linux-xlnx/.config.new:CONFIG_VIDEO_IMX678=y
+./components/yocto/workspace/sources/linux-xlnx/oe-workdir/linux-xlnx-5.15.36+git999/include/config/auto.conf:CONFIG_VIDEO_IMX678=y
+./components/yocto/workspace/sources/linux-xlnx/oe-workdir/linux-xlnx-5.15.36+git999/.config.old:CONFIG_VIDEO_IMX678=y
+./components/yocto/workspace/sources/linux-xlnx/oe-workdir/linux-xlnx-5.15.36+git999/.config:CONFIG_VIDEO_IMX678=y
+./components/yocto/workspace/sources/linux-xlnx/oe-workdir/linux-xlnx-5.15.36+git999/kernel/config_data:CONFIG_VIDEO_IMX678=y
+./components/yocto/workspace/sources/linux-xlnx/oe-workdir/package/boot/config-5.15.36-xilinx-v2022.2:CONFIG_VIDEO_IMX678=y
+./components/yocto/workspace/sources/linux-xlnx/oe-workdir/packages-split/kernel-dev/boot/config-5.15.36-xilinx-v2022.2:CONFIG_VIDEO_IMX678=y
+./components/yocto/workspace/sources/linux-xlnx/oe-workdir/image/boot/config-5.15.36-xilinx-v2022.2:CONFIG_VIDEO_IMX678=y
+./components/yocto/workspace/sources/linux-xlnx/oe-workdir/bsp.cfg:CONFIG_VIDEO_IMX678=y
+./components/yocto/workspace/sources/linux-xlnx/oe-local-files/bsp.cfg:CONFIG_VIDEO_IMX678=y
+./components/yocto/workspace/sources/linux-xlnx/.config.baseline:CONFIG_VIDEO_IMX678=y
+```
+
+
+
+
+
+
+petalinux-build -c linux-xlnx -x cleansstate
+
+petalinux-config -c linux-xlnx
+
+
+grep -R "CONFIG_VIDEO_IMX678" ./build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+git999-r0
+grep -R "CONFIG_VIDEO_IMX678" ./components/yocto/workspace/sources/linux-xlnx/
+强制修改吧
+petalinux-config -c kernel要能看到是M
+
+petalinux-build
+
+过程中
+$ cat build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+git999-r0/linux-xlnx-5.15.36+git999/.config | grep IMX678
+CONFIG_VIDEO_IMX678=m
+
+
+
+这次确实编译为模块了
+
+zcat /proc/config.gz | grep -i imx678           # 显示为m了
+
+i2ctransfer -f -y 0 w2@0x1a 0x39 0x12 r1        # ok
+
+rmmod imx678
+modprobe imx678
+
+加载驱动时候还是无ack, 那么需要看复位信号和i2c波形的时序关系
+
+实际上, i2c序列给出的时候, reset是低信号
+
+
+
+/////////////////////////////////////////////
+
+是否flag反了? 代码逻辑上 poweron->fail->poweroff, 确实是有可能看到这样的复位信号波形的
+
+dts的
+reset-gpios = <&rest_gpio 1 1>;
+改成
+reset-gpios = <&rest_gpio 1 0>;
+怎么样呢? 更像是正常的, 先读ID, 然后power off, 应该在使用的时候再给power on
+
+实在不行就取消reset-gpio
+
+
+
+
+
+
+
+
+//////////////////
+
+
+petalinux-build -c linux-xlnx -x cleansstate
+petalinux-build
+
+cat build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+git999-r0/linux-xlnx-5.15.36+git999/.config | grep IMX678
+
+petalinux-package --boot --u-boot --fpga --force
+
+
+
+
+
+
+
+
+
+
+dtc -I dtb -O dts -@ -o system.dts system.dtb
+gedit system.dts
+
+
+
+
+去掉 sensor 节点里的
+```
+#address-cells = <1>;
+#size-cells = <0>;
+```
+
+
+
+
+
+petalinux-build -c linux-xlnx -x cleansstate
+petalinux-build
+
+petalinux-package --boot --u-boot --fpga --force
+
+
+///////////////////
+上面的两次, i2c检测到上电过程读了sensor id的动作.(先不管是不是ID吧), 然后 XCLR 就拉低了, dmesg也没有给什么有关678的报错. 说不定现在就是对的状态, 操作video0节点才给sensor上电?
+
+记录一些查询结果
+```
+root@petalinux:~# media-ctl -p
+Media controller API version 5.15.36
+
+Media device information
+------------------------
+driver          xilinx-video
+model           Xilinx Video Composite Device
+serial          
+bus info        
+hw revision     0x0
+driver version  5.15.36
+
+Device topology
+- entity 1: vcap_tpg_input_v_tpg_0 output 0 (1 pad, 1 link)
+            type Node subtype V4L flags 0
+            device node name /dev/video1
+        pad0: Sink
+                <- "a0130000.v_tpg":1 [ENABLED]
+
+- entity 5: a0130000.v_tpg (2 pads, 1 link)
+            type V4L2 subdev subtype Unknown flags 0
+            device node name /dev/v4l-subdev0
+        pad0: Sink
+                [fmt:UYVY8_1X16/0x0@1/30 field:none colorspace:srgb]
+        pad1: Source
+                [fmt:UYVY8_1X16/0x0@1/30 field:none colorspace:srgb]
+                -> "vcap_tpg_input_v_tpg_0 output 0":0 [ENABLED]
+
+root@petalinux:~# ls /dev/video
+video0  video1  
+root@petalinux:~# v4l2-ctl --list-devices
+vcap_mipi_csi2_rx_v_proc_ss_0 o (platform:vcap_mipi_csi2_rx_v_pr):
+        /dev/video0
+
+vcap_tpg_input_v_tpg_0 output 0 (platform:vcap_tpg_input_v_tpg_0):
+        /dev/video1
+
+Xilinx Video Composite Device (platform:xilinx-video):
+        /dev/media0
+        /dev/media1
+
+root@petalinux:~# v4l2-ctl -d /dev/video0 --all
+Driver Info:
+        Driver name      : xilinx-vipp
+        Card type        : vcap_mipi_csi2_rx_v_proc_ss_0 o
+        Bus info         : platform:vcap_mipi_csi2_rx_v_pr
+        Driver version   : 5.15.36
+        Capabilities     : 0x84201000
+                Video Capture Multiplanar
+                Streaming
+                Extended Pix Format
+                Device Capabilities
+        Device Caps      : 0x04201000
+                Video Capture Multiplanar
+                Streaming
+                Extended Pix Format
+Media Driver Info:
+        Driver name      : xilinx-video
+        Model            : Xilinx Video Composite Device
+        Serial           : 
+        Bus info         : 
+        Media version    : 5.15.36
+        Hardware revision: 0x00000000 (0)
+        Driver version   : 5.15.36
+Interface Info:
+        ID               : 0x03000003
+        Type             : V4L Video
+Entity Info:
+        ID               : 0x00000001 (1)
+        Name             : vcap_mipi_csi2_rx_v_proc_ss_0 o
+        Function         : V4L2 I/O
+        Pad 0x01000002   : 0: Sink
+          Link 0x0200001b: from remote pad 0x1000007 of entity 'a00c0000.v_proc_ss': Data, Enabled
+Priority: 2
+Video input : 0 (a00c0000.v_proc_ss: ok)
+Format Video Capture Multiplanar:
+        Width/Height      : 1920/0
+        Pixel Format      : 'YUYV'
+        Field             : None
+        Number of planes  : 0
+        Flags             : 
+        Colorspace        : sRGB
+        Transfer Function : Default
+        YCbCr/HSV Encoding: Default
+        Quantization      : Default
+Selection Video Capture: compose, Left 0, Top 0, Width 0, Height 0, Flags: 
+Selection Video Capture: compose_default, Left 0, Top 0, Width 1920, Height 0, Flags: 
+Selection Video Capture: compose_bounds, Left 0, Top 0, Width 1920, Height 0, Flags: 
+Selection Video Output: crop, Left 0, Top 0, Width 0, Height 0, Flags: 
+Selection Video Output: crop_default, Left 0, Top 0, Width 1920, Height 0, Flags: 
+Selection Video Output: crop_bounds, Left 0, Top 0, Width 1920, Height 0, Flags: 
+
+User Controls
+
+                       exposure 0x00980911 (int)    : min=1 max=4497 step=1 default=1608 value=1608
+  red_gamma_correction_1_0_1_10 0x0098c9c1 (int)    : min=1 max=40 step=1 default=10 value=10 flags=slider
+ blue_gamma_correction_1_0_1_10 0x0098c9c2 (int)    : min=1 max=40 step=1 default=10 value=10 flags=slider
+ green_gamma_correction_1_0_1_1 0x0098c9c3 (int)    : min=1 max=40 step=1 default=10 value=10 flags=slider
+           low_latency_controls 0x0098ca21 (int)    : min=2 max=8 step=1 default=4 value=4
+
+Image Source Controls
+
+              vertical_blanking 0x009e0901 (int)    : min=2560 max=133060 step=1 default=2560 value=2560
+            horizontal_blanking 0x009e0902 (int)    : min=0 max=1048575 step=1 default=342 value=342 flags=read-only
+                  analogue_gain 0x009e0903 (int)    : min=0 max=240 step=1 default=0 value=0
+
+Image Processing Controls
+
+                 link_frequency 0x009f0901 (intmenu): min=0 max=0 default=0 value=0 flags=read-only
+                                0: 720000000 (0x2aea5400)
+                     pixel_rate 0x009f0902 (int64)  : min=396000000 max=396000000 step=1 default=396000000 value=396000000 flags=read-only
+root@petalinux:~# ls /dev/v4l-subdev*
+/dev/v4l-subdev0  /dev/v4l-subdev1  /dev/v4l-subdev2  /dev/v4l-subdev3  /dev/v4l-subdev4  /dev/v4l-subdev5
+
+root@petalinux:~# media-ctl -p
+Media controller API version 5.15.36
+
+Media device information
+------------------------
+driver          xilinx-video
+model           Xilinx Video Composite Device
+serial          
+bus info        
+hw revision     0x0
+driver version  5.15.36
+
+Device topology
+- entity 1: vcap_tpg_input_v_tpg_0 output 0 (1 pad, 1 link)
+            type Node subtype V4L flags 0
+            device node name /dev/video1
+        pad0: Sink
+                <- "a0130000.v_tpg":1 [ENABLED]
+
+- entity 5: a0130000.v_tpg (2 pads, 1 link)
+            type V4L2 subdev subtype Unknown flags 0
+            device node name /dev/v4l-subdev0
+        pad0: Sink
+                [fmt:UYVY8_1X16/0x0@1/30 field:none colorspace:srgb]
+        pad1: Source
+                [fmt:UYVY8_1X16/0x0@1/30 field:none colorspace:srgb]
+                -> "vcap_tpg_input_v_tpg_0 output 0":0 [ENABLED]
+
+root@petalinux:~# ls /dev/video
+video0  video1  
+root@petalinux:~# ls /dev/video
+video0  video1  
+root@petalinux:~# v4l2-ctl --list-devices
+vcap_mipi_csi2_rx_v_proc_ss_0 o (platform:vcap_mipi_csi2_rx_v_pr):
+        /dev/video0
+
+vcap_tpg_input_v_tpg_0 output 0 (platform:vcap_tpg_input_v_tpg_0):
+        /dev/video1
+
+Xilinx Video Composite Device (platform:xilinx-video):
+        /dev/media0
+        /dev/media1
+
+root@petalinux:~# v4l2-ctl -d /dev/video0 --all
+Driver Info:
+        Driver name      : xilinx-vipp
+        Card type        : vcap_mipi_csi2_rx_v_proc_ss_0 o
+        Bus info         : platform:vcap_mipi_csi2_rx_v_pr
+        Driver version   : 5.15.36
+        Capabilities     : 0x84201000
+                Video Capture Multiplanar
+                Streaming
+                Extended Pix Format
+                Device Capabilities
+        Device Caps      : 0x04201000
+                Video Capture Multiplanar
+                Streaming
+                Extended Pix Format
+Media Driver Info:
+        Driver name      : xilinx-video
+        Model            : Xilinx Video Composite Device
+        Serial           : 
+        Bus info         : 
+        Media version    : 5.15.36
+        Hardware revision: 0x00000000 (0)
+        Driver version   : 5.15.36
+Interface Info:
+        ID               : 0x03000003
+        Type             : V4L Video
+Entity Info:
+        ID               : 0x00000001 (1)
+        Name             : vcap_mipi_csi2_rx_v_proc_ss_0 o
+        Function         : V4L2 I/O
+        Pad 0x01000002   : 0: Sink
+          Link 0x0200001b: from remote pad 0x1000007 of entity 'a00c0000.v_proc_ss': Data, Enabled
+Priority: 2
+Video input : 0 (a00c0000.v_proc_ss: ok)
+Format Video Capture Multiplanar:
+        Width/Height      : 1920/0
+        Pixel Format      : 'YUYV'
+        Field             : None
+        Number of planes  : 0
+        Flags             : 
+        Colorspace        : sRGB
+        Transfer Function : Default
+        YCbCr/HSV Encoding: Default
+        Quantization      : Default
+Selection Video Capture: compose, Left 0, Top 0, Width 0, Height 0, Flags: 
+Selection Video Capture: compose_default, Left 0, Top 0, Width 1920, Height 0, Flags: 
+Selection Video Capture: compose_bounds, Left 0, Top 0, Width 1920, Height 0, Flags: 
+Selection Video Output: crop, Left 0, Top 0, Width 0, Height 0, Flags: 
+Selection Video Output: crop_default, Left 0, Top 0, Width 1920, Height 0, Flags: 
+Selection Video Output: crop_bounds, Left 0, Top 0, Width 1920, Height 0, Flags: 
+
+User Controls
+
+                       exposure 0x00980911 (int)    : min=1 max=4497 step=1 default=1608 value=1608
+  red_gamma_correction_1_0_1_10 0x0098c9c1 (int)    : min=1 max=40 step=1 default=10 value=10 flags=slider
+ blue_gamma_correction_1_0_1_10 0x0098c9c2 (int)    : min=1 max=40 step=1 default=10 value=10 flags=slider
+ green_gamma_correction_1_0_1_1 0x0098c9c3 (int)    : min=1 max=40 step=1 default=10 value=10 flags=slider
+           low_latency_controls 0x0098ca21 (int)    : min=2 max=8 step=1 default=4 value=4
+
+Image Source Controls
+
+              vertical_blanking 0x009e0901 (int)    : min=2560 max=133060 step=1 default=2560 value=2560
+            horizontal_blanking 0x009e0902 (int)    : min=0 max=1048575 step=1 default=342 value=342 flags=read-only
+                  analogue_gain 0x009e0903 (int)    : min=0 max=240 step=1 default=0 value=0
+
+Image Processing Controls
+
+                 link_frequency 0x009f0901 (intmenu): min=0 max=0 default=0 value=0 flags=read-only
+                                0: 720000000 (0x2aea5400)
+                     pixel_rate 0x009f0902 (int64)  : min=396000000 max=396000000 step=1 default=396000000 value=396000000 flags=read-only
+root@petalinux:~# ls /dev/v4l-subdev*
+/dev/v4l-subdev0  /dev/v4l-subdev1  /dev/v4l-subdev2  /dev/v4l-subdev3  /dev/v4l-subdev4  /dev/v4l-subdev5
+
+
+root@petalinux:~# v4l2-ctl -d /dev/video0 --stream-mmap --stream-count=10
+[ 2298.755312] ------------[ cut here ]------------
+[ 2298.759928] WARNING: CPU: 2 PID: 1011 at drivers/media/common/videobuf2/videobuf2-core.c:807 vb2_core_reqbufs+0x138/0x400
+[ 2298.770879] Modules linked in: zocl(O) al5e(O) al5d(O) allegro(O) xilinx_hdmi_tx(O) dp159(O) mali(O) imx678 xlnx_vcu xilinx_vphy(O) uio_pdrv_genirq dmaproxy(O)
+[ 2298.785159] CPU: 2 PID: 1011 Comm: v4l2-ctl Tainted: G           O      5.15.36-xilinx-v2022.2 #1
+[ 2298.794020] Hardware name: xlnx,zynqmp (DT)
+[ 2298.798187] pstate: 60000005 (nZCv daif -PAN -UAO -TCO -DIT -SSBS BTYPE=--)
+[ 2298.805139] pc : vb2_core_reqbufs+0x138/0x400
+[ 2298.809487] lr : vb2_core_reqbufs+0x100/0x400
+[ 2298.813836] sp : ffff80000a37bb10
+[ 2298.817134] x29: ffff80000a37bb10 x28: ffff00080016be00 x27: 0000000000000000
+[ 2298.824260] x26: 0000000000000000 x25: ffff80000a37bd28 x24: ffff000824828868
+[ 2298.831387] x23: ffff0008248289e8 x22: 0000000000000001 x21: ffff80000a37bd28
+[ 2298.838513] x20: 0000000000000000 x19: ffff000824828980 x18: 0000000000000000
+[ 2298.845639] x17: 0000000000000000 x16: 0000000000000000 x15: 0000ffffcbed31e8
+[ 2298.852766] x14: 0000000000000000 x13: 0000000000000000 x12: 0000000000000000
+[ 2298.859892] x11: 0000000000000000 x10: 0000000000000000 x9 : 0000000000000000
+[ 2298.867018] x8 : ffff000824828a28 x7 : 0000000000000000 x6 : 0000000000000000
+[ 2298.874145] x5 : 0000000000000000 x4 : 0000000000000000 x3 : 0000000000000001
+[ 2298.881271] x2 : ffff80000a37bb6c x1 : 0000000000000001 x0 : ffff80000a37bb68
+[ 2298.888398] Call trace:
+[ 2298.890828]  vb2_core_reqbufs+0x138/0x400
+[ 2298.894829]  vb2_ioctl_reqbufs+0x84/0xc0
+[ 2298.898744]  v4l_reqbufs+0x4c/0x60
+[ 2298.902137]  __video_do_ioctl+0x17c/0x3e0
+[ 2298.906139]  video_usercopy+0x368/0x720
+[ 2298.909967]  video_ioctl2+0x18/0x30
+[ 2298.913448]  v4l2_ioctl+0x44/0x64
+[ 2298.916755]  __arm64_sys_ioctl+0xb8/0xe0
+[ 2298.920669]  invoke_syscall+0x54/0x124
+[ 2298.924410]  el0_svc_common.constprop.0+0xd4/0xfc
+[ 2298.929106]  do_el0_svc+0x48/0xb0
+[ 2298.932413]  el0_svc+0x28/0x80
+[ 2298.935460]  el0t_64_sync_handler+0xa4/0x130
+[ 2298.939722]  el0t_64_sync+0x1a0/0x1a4
+[ 2298.943377] ---[ end trace 430e912597708f92 ]---
+                VIDIOC_REQBUFS returned -1 (Invalid argument)
+
+
+root@petalinux:~# media-ctl -p | grep mipi
+
+root@petalinux:~# dmesg | grep -i vcap                                                                                                                                                                             
+[    0.268839] platform amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_0: Fixing up cyclic dependency with a00c0000.v_proc_ss
+[    0.277785] platform amba_pl@0:vcap_tpg_input_v_tpg_0: Fixing up cyclic dependency with a0130000.v_tpg
+[   10.996220] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_0: /amba_pl@0/vcap_mipi_csi2_rx_v_proc_ss_0/ports/port@0 initialization failed
+[   11.008335] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_0: DMA initialization failed
+[   11.016682] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: /amba_pl@0/vcap_tpg_input_v_tpg_0/ports/port@0 initialization failed
+[   11.028056] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: DMA initialization failed
+[   11.937415] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_0: Entity type for entity a00c0000.v_proc_ss was not initialized!
+[   11.948981] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_0: device registered
+[   11.962416] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: device registered
+[   11.977248] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_0: Entity type for entity a0070000.mipi_csi2_rx_subsystem was not initialized!
+[   11.999141] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_0: Entity type for entity a0080000.v_demosaic was not initialized!
+[   12.016832] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_0: Entity type for entity a00a0000.v_gamma_lut was not initialized!
+[   12.079576] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: Entity type for entity a0130000.v_tpg was not initialized!
+
+
+```
+
+````
+
+26.3.2记录
+
+````
+
+在 probe 最后加一行：
+
+dev_info(dev, "IMX678 PROBE SUCCESS\n");
+
+
+在：
+
+if (imx678_check_hwcfg(dev, imx678))
+
+前后加：
+
+dev_info(dev, "checking hwcfg\n");
+
+重新编译
+
+
+```
+
+root@petalinux:~# v4l2-ctl -d /dev/video0 --all
+Driver Info:
+        Driver name      : xilinx-vipp
+        Card type        : vcap_mipi_csi2_rx_v_proc_ss_sca
+        Bus info         : platform:vcap_mipi_csi2_rx_v_pr
+        Driver version   : 5.15.36
+        Capabilities     : 0x84201000
+                Video Capture Multiplanar
+                Streaming
+                Extended Pix Format
+                Device Capabilities
+        Device Caps      : 0x04201000
+                Video Capture Multiplanar
+                Streaming
+                Extended Pix Format
+Media Driver Info:
+        Driver name      : xilinx-video
+        Model            : Xilinx Video Composite Device
+        Serial           : 
+        Bus info         : 
+        Media version    : 5.15.36
+        Hardware revision: 0x00000000 (0)
+        Driver version   : 5.15.36
+Interface Info:
+        ID               : 0x03000003
+        Type             : V4L Video
+Entity Info:
+        ID               : 0x00000001 (1)
+        Name             : vcap_mipi_csi2_rx_v_proc_ss_sca
+        Function         : V4L2 I/O
+        Pad 0x01000002   : 0: Sink
+          Link 0x02000020: from remote pad 0x1000015 of entity 'a00c0000.v_proc_ss': Data, Enabled
+Priority: 2
+Video input : 0 (a00c0000.v_proc_ss: ok)
+Format Video Capture Multiplanar:
+        Width/Height      : 1920/0
+        Pixel Format      : 'YUYV'
+        Field             : None
+        Number of planes  : 0
+        Flags             : 
+        Colorspace        : sRGB
+        Transfer Function : Default
+        YCbCr/HSV Encoding: Default
+        Quantization      : Default
+Selection Video Capture: compose, Left 0, Top 0, Width 0, Height 0, Flags: 
+Selection Video Capture: compose_default, Left 0, Top 0, Width 1920, Height 0, Flags: 
+Selection Video Capture: compose_bounds, Left 0, Top 0, Width 1920, Height 0, Flags: 
+Selection Video Output: crop, Left 0, Top 0, Width 0, Height 0, Flags: 
+Selection Video Output: crop_default, Left 0, Top 0, Width 1920, Height 0, Flags: 
+Selection Video Output: crop_bounds, Left 0, Top 0, Width 1920, Height 0, Flags: 
+
+User Controls
+
+                       exposure 0x00980911 (int)    : min=1 max=4497 step=1 default=1608 value=1608
+                 csc_brightness 0x0098c9a1 (int)    : min=0 max=100 step=1 default=50 value=50 flags=slider
+                   csc_contrast 0x0098c9a2 (int)    : min=0 max=100 step=1 default=50 value=50 flags=slider
+                   csc_red_gain 0x0098c9a3 (int)    : min=0 max=100 step=1 default=50 value=50 flags=slider
+                 csc_green_gain 0x0098c9a4 (int)    : min=0 max=100 step=1 default=50 value=50 flags=slider
+                  csc_blue_gain 0x0098c9a5 (int)    : min=0 max=100 step=1 default=50 value=50 flags=slider
+  red_gamma_correction_1_0_1_10 0x0098c9c1 (int)    : min=1 max=40 step=1 default=10 value=10 flags=slider
+ blue_gamma_correction_1_0_1_10 0x0098c9c2 (int)    : min=1 max=40 step=1 default=10 value=10 flags=slider
+ green_gamma_correction_1_0_1_1 0x0098c9c3 (int)    : min=1 max=40 step=1 default=10 value=10 flags=slider
+           low_latency_controls 0x0098ca21 (int)    : min=2 max=8 step=1 default=4 value=4
+
+Image Source Controls
+
+              vertical_blanking 0x009e0901 (int)    : min=90 max=132840 step=1 default=2340 value=2340
+            horizontal_blanking 0x009e0902 (int)    : min=0 max=1048575 step=1 default=560 value=560 flags=read-only
+                  analogue_gain 0x009e0903 (int)    : min=0 max=240 step=1 default=0 value=0
+
+Image Processing Controls
+
+                 link_frequency 0x009f0901 (intmenu): min=0 max=0 default=0 value=0 flags=read-only
+                                0: 720000000 (0x2aea5400)
+                     pixel_rate 0x009f0902 (int64)  : min=594000000 max=594000000 step=1 default=594000000 value=594000000 flags=read-only
+root@petalinux:~# v4l2-ctl --list-devices
+vcap_mipi_csi2_rx_v_proc_ss_sca (platform:vcap_mipi_csi2_rx_v_pr):
+        /dev/video0
+
+vcap_tpg_input_v_tpg_0 output 0 (platform:vcap_tpg_input_v_tpg_0):
+        /dev/video1
+
+Xilinx Video Composite Device (platform:xilinx-video):
+        /dev/media0
+        /dev/media1
+```
+
+
+
+按照你说的简单设置一下, 有报错和不清楚应该怎么设置的地方
+```
+root@petalinux:~# media-ctl -V '"imx678 0-001a":0 [fmt:SRGGB10_1X10/3840x2160]'                                                                                                                                    
+root@petalinux:~# media-ctl -V '"a0070000.mipi_csi2_rx_subsystem":0 [fmt:SRGGB10_1X10/3840x2160]'                                                                                                                  
+root@petalinux:~# media-ctl -V '"a00c0000.v_proc_ss":0 [fmt:SRGGB10_1X10/3840x2160]'                                                                                                                               
+root@petalinux:~# media-ctl -V '"a0100000.v_proc_ss":0 [fmt:SRGGB10_1X10/3840x2160]'                                                                                                                               
+Unable to setup formats: Invalid argument (22)
+```
+提供给你更精确的信息:
+我现在的
+imx678设置的是3840x2160@60fps@raw10bit@4lanes # 可以按rggb bayer先设置
+mipi_csi2_rx_subsystem设置成SRGGB10_1X10/3840x2160没有报错
+输出之后通过axis_subset_converter截断10bit的高8字节提供给后续路径
+然后是Demosaic(0xA0080000)
+a0100000.v_proc_ss是csc only,我希望输出是yuv422, dts的设置(pl.dtsi是用peta自动产生的)是
+```
+&mipi_csi2_rx_v_proc_ss_csc {
+	compatible = "xlnx,v-vpss-csc";
+};
+```
+a00c0000.v_proc_ss是scaler,并且勾选了csc,我希望缩放比是1:1(保持yuv422). dts的设置是
+```
+&mipi_csi2_rx_v_proc_ss_scaler {
+	compatible = "xlnx,v-vpss-scaler-2.2";
+};
+```
+后面的是frmbuf_wr和axi_data_fifo, 
+
+这里应该怎么给命令
+
+你要求的media-ctl -p 信息在下面
+```
+root@petalinux:~# media-ctl -p                                                      
+Media controller API version 5.15.36
+
+Media device information
+------------------------
+driver          xilinx-video
+model           Xilinx Video Composite Device
+serial          
+bus info        
+hw revision     0x0
+driver version  5.15.36
+
+Device topology
+- entity 1: vcap_mipi_csi2_rx_v_proc_ss_sca (1 pad, 1 link)
+            type Node subtype V4L flags 0
+            device node name /dev/video0
+        pad0: Sink
+                <- "a00c0000.v_proc_ss":1 [ENABLED]
+
+- entity 5: imx678 0-001a (1 pad, 1 link)
+            type V4L2 subdev subtype Sensor flags 0
+            device node name /dev/v4l-subdev0
+        pad0: Source
+                [fmt:SRGGB10_1X10/3840x2160 field:none colorspace:raw xfer:none]
+                -> "a0070000.mipi_csi2_rx_subsystem":0 [ENABLED]
+
+- entity 7: a0070000.mipi_csi2_rx_subsystem (2 pads, 2 links)
+            type V4L2 subdev subtype Unknown flags 0
+            device node name /dev/v4l-subdev1
+        pad0: Sink
+                [fmt:SRGGB10_1X10/3840x2160]
+                <- "imx678 0-001a":0 [ENABLED]
+        pad1: Source
+                [fmt:SRGGB10_1X10/3840x2160]
+                -> "a0080000.v_demosaic":0 [ENABLED]
+
+- entity 10: a0080000.v_demosaic (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev2
+        pad0: Sink
+                [fmt:SRGGB8_1X8/1280x720 field:none colorspace:srgb]
+                <- "a0070000.mipi_csi2_rx_subsystem":1 [ENABLED]
+        pad1: Source
+                [fmt:RBG888_1X24/1280x720 field:none colorspace:srgb]
+                -> "a00a0000.v_gamma_lut":0 [ENABLED]
+
+- entity 13: a00a0000.v_gamma_lut (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev3
+        pad0: Sink
+                [fmt:RBG888_1X24/1280x720 field:none colorspace:srgb]
+                <- "a0080000.v_demosaic":1 [ENABLED]
+        pad1: Source
+                [fmt:RBG888_1X24/1280x720 field:none colorspace:srgb]
+                -> "a0100000.v_proc_ss":0 [ENABLED]
+
+- entity 16: a0100000.v_proc_ss (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev4
+        pad0: Sink
+                [fmt:RBG888_1X24/3840x2160]
+                <- "a00a0000.v_gamma_lut":1 [ENABLED]
+        pad1: Source
+                [fmt:VYYUYY8_1X24/1280x720 field:none colorspace:rec709]
+                -> "a00c0000.v_proc_ss":0 [ENABLED]
+
+- entity 19: a00c0000.v_proc_ss (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev5
+        pad0: Sink
+                [fmt:SRGGB10_1X10/3840x2160]
+                <- "a0100000.v_proc_ss":1 [ENABLED]
+        pad1: Source
+                [fmt:VYYUYY8_1X24/1920x1080 field:none colorspace:srgb]
+                -> "vcap_mipi_csi2_rx_v_proc_ss_sca":0 [ENABLED]
+
+```
+重新回答, 包括imx678的路径的每个节点怎么设置
+
+
+
+
+
+
+实际上这样才是视频流的路径顺序
+```
+# 设置IMX678传感器的格式为SRGGB10_1X10，分辨率3840x2160
+media-ctl -V '"imx678 0-001a":0 [fmt:SRGGB10_1X10/3840x2160]'
+
+# 设置 MIPI CSI2 RX Subsystem 格式为 SRGGB10_1X10，分辨率3840x2160
+media-ctl -V '"a0070000.mipi_csi2_rx_subsystem":0 [fmt:SRGGB10_1X10/3840x2160]'
+
+# 设置 Demosaic 输入格式为 SRGGB10_1X10，输出为 RGB888_1X24
+media-ctl -V '"a0080000.v_demosaic":0 [fmt:SRGGB10_1X10/3840x2160]'
+media-ctl -V '"a0080000.v_demosaic":1 [fmt:RGB888_1X24/3840x2160]'
+
+# 设置 Gamma LUT 输入和输出格式为 RGB888_1X24
+media-ctl -V '"a00a0000.v_gamma_lut":0 [fmt:RGB888_1X24/3840x2160]'
+media-ctl -V '"a00a0000.v_gamma_lut":1 [fmt:RGB888_1X24/3840x2160]'
+
+# 设置 CSC 输入格式为RGB888_1X24，输出格式为  YUV422 (UYVY8_1X16)
+media-ctl -V '"a0100000.v_proc_ss":0 [fmt:RGB888_1X24/3840x2160]'
+media-ctl -V '"a0100000.v_proc_ss":1 [fmt:UYVY8_1X16/3840x2160]'
+
+# 设置 Scaler 输入格式为 YUV422，输出格式为 YUV422 (UYVY8_1X16)
+media-ctl -V '"a00c0000.v_proc_ss":0 [fmt:UYVY8_1X16/3840x2160]'
+media-ctl -V '"a00c0000.v_proc_ss":1 [fmt:UYVY8_1X16/3840x2160]'
+```
+我遇到了报错
+```
+root@petalinux:~# media-ctl -V '"imx678 0-001a":0 [fmt:SRGGB10_1X10/3840x2160]'
+root@petalinux:~# media-ctl -V '"a0070000.mipi_csi2_rx_subsystem":0 [fmt:SRGGB10_1X10/3840x2160]'
+root@petalinux:~# media-ctl -V '"a0080000.v_demosaic":0 [fmt:SRGGB10_1X10/3840x2160]'
+root@petalinux:~# media-ctl -V '"a0080000.v_demosaic":1 [fmt:RGB888_1X24/3840x2160]'
+root@petalinux:~# media-ctl -V '"a00a0000.v_gamma_lut":0 [fmt:RGB888_1X24/3840x2160]'
+root@petalinux:~# media-ctl -V '"a00a0000.v_gamma_lut":1 [fmt:RGB888_1X24/3840x2160]'
+root@petalinux:~# media-ctl -V '"a0100000.v_proc_ss":0 [fmt:RGB888_1X24/3840x2160]'
+Unable to setup formats: Invalid argument (22)
+root@petalinux:~# media-ctl -V '"a0100000.v_proc_ss":1 [fmt:UYVY8_1X16/3840x2160]'
+[ 2322.022827] xilinx-vpss-csc a0100000.v_proc_ss: VPSS CSC color controls reset to defaults
+root@petalinux:~# media-ctl -V '"a00c0000.v_proc_ss":0 [fmt:UYVY8_1X16/3840x2160]'
+root@petalinux:~# media-ctl -V '"a00c0000.v_proc_ss":1 [fmt:UYVY8_1X16/3840x2160]'
+
+
+root@petalinux:~# media-ctl -p
+Media controller API version 5.15.36
+
+Media device information
+------------------------
+driver          xilinx-video
+model           Xilinx Video Composite Device
+serial          
+bus info        
+hw revision     0x0
+driver version  5.15.36
+
+Device topology
+- entity 1: vcap_mipi_csi2_rx_v_proc_ss_sca (1 pad, 1 link)
+            type Node subtype V4L flags 0
+            device node name /dev/video0
+        pad0: Sink
+                <- "a00c0000.v_proc_ss":1 [ENABLED]
+
+- entity 5: imx678 0-001a (1 pad, 1 link)
+            type V4L2 subdev subtype Sensor flags 0
+            device node name /dev/v4l-subdev0
+        pad0: Source
+                [fmt:SRGGB10_1X10/3840x2160 field:none colorspace:raw xfer:none]
+                -> "a0070000.mipi_csi2_rx_subsystem":0 [ENABLED]
+
+- entity 7: a0070000.mipi_csi2_rx_subsystem (2 pads, 2 links)
+            type V4L2 subdev subtype Unknown flags 0
+            device node name /dev/v4l-subdev1
+        pad0: Sink
+                [fmt:SRGGB10_1X10/3840x2160]
+                <- "imx678 0-001a":0 [ENABLED]
+        pad1: Source
+                [fmt:SRGGB10_1X10/3840x2160]
+                -> "a0080000.v_demosaic":0 [ENABLED]
+
+- entity 10: a0080000.v_demosaic (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev2
+        pad0: Sink
+                [fmt:SRGGB10_1X10/3840x2160]
+                <- "a0070000.mipi_csi2_rx_subsystem":1 [ENABLED]
+        pad1: Source
+                [fmt:RBG888_1X24/3840x2160]
+                -> "a00a0000.v_gamma_lut":0 [ENABLED]
+
+- entity 13: a00a0000.v_gamma_lut (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev3
+        pad0: Sink
+                [fmt:RBG888_1X24/3840x2160]
+                <- "a0080000.v_demosaic":1 [ENABLED]
+        pad1: Source
+                [fmt:RBG888_1X24/3840x2160]
+                -> "a0100000.v_proc_ss":0 [ENABLED]
+
+- entity 16: a0100000.v_proc_ss (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev4
+        pad0: Sink
+                [fmt:RBG888_1X24/3840x2160]
+                <- "a00a0000.v_gamma_lut":1 [ENABLED]
+        pad1: Source
+                [fmt:UYVY8_1X16/3840x2160]
+                -> "a00c0000.v_proc_ss":0 [ENABLED]
+
+- entity 19: a00c0000.v_proc_ss (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev5
+        pad0: Sink
+                [fmt:UYVY8_1X16/3840x2160]
+                <- "a0100000.v_proc_ss":1 [ENABLED]
+        pad1: Source
+                [fmt:UYVY8_1X16/3840x2160]
+                -> "vcap_mipi_csi2_rx_v_proc_ss_sca":0 [ENABLED]
+
+```
+这样对了吗? 实际上a0100000的pad0就是RBG888_1X24
+
+
+
+```
+root@petalinux:~# v4l2-ctl -d /dev/video0 --all
+Driver Info:
+        Driver name      : xilinx-vipp
+        Card type        : vcap_mipi_csi2_rx_v_proc_ss_sca
+        Bus info         : platform:vcap_mipi_csi2_rx_v_pr
+        Driver version   : 5.15.36
+        Capabilities     : 0x84201000
+                Video Capture Multiplanar
+                Streaming
+                Extended Pix Format
+                Device Capabilities
+        Device Caps      : 0x04201000
+                Video Capture Multiplanar
+                Streaming
+                Extended Pix Format
+Media Driver Info:
+        Driver name      : xilinx-video
+        Model            : Xilinx Video Composite Device
+        Serial           : 
+        Bus info         : 
+        Media version    : 5.15.36
+        Hardware revision: 0x00000000 (0)
+        Driver version   : 5.15.36
+Interface Info:
+        ID               : 0x03000003
+        Type             : V4L Video
+Entity Info:
+        ID               : 0x00000001 (1)
+        Name             : vcap_mipi_csi2_rx_v_proc_ss_sca
+        Function         : V4L2 I/O
+        Pad 0x01000002   : 0: Sink
+          Link 0x02000020: from remote pad 0x1000015 of entity 'a00c0000.v_proc_ss': Data, Enabled
+Priority: 2
+Video input : 0 (a00c0000.v_proc_ss: ok)
+Format Video Capture Multiplanar:
+        Width/Height      : 1920/0
+        Pixel Format      : 'YUYV' (YUYV 4:2:2)
+        Field             : None
+        Number of planes  : 0
+        Flags             : 
+        Colorspace        : sRGB
+        Transfer Function : Default
+        YCbCr/HSV Encoding: Default
+        Quantization      : Default
+Selection Video Capture: compose, Left 0, Top 0, Width 0, Height 0, Flags: 
+Selection Video Capture: compose_default, Left 0, Top 0, Width 1920, Height 0, Flags: 
+Selection Video Capture: compose_bounds, Left 0, Top 0, Width 1920, Height 0, Flags: 
+Selection Video Output: crop, Left 0, Top 0, Width 0, Height 0, Flags: 
+Selection Video Output: crop_default, Left 0, Top 0, Width 1920, Height 0, Flags: 
+Selection Video Output: crop_bounds, Left 0, Top 0, Width 1920, Height 0, Flags: 
+
+User Controls
+
+                       exposure 0x00980911 (int)    : min=1 max=4497 step=1 default=1608 value=1608
+                 csc_brightness 0x0098c9a1 (int)    : min=0 max=100 step=1 default=50 value=50 flags=slider
+                   csc_contrast 0x0098c9a2 (int)    : min=0 max=100 step=1 default=50 value=50 flags=slider
+                   csc_red_gain 0x0098c9a3 (int)    : min=0 max=100 step=1 default=50 value=50 flags=slider
+                 csc_green_gain 0x0098c9a4 (int)    : min=0 max=100 step=1 default=50 value=50 flags=slider
+                  csc_blue_gain 0x0098c9a5 (int)    : min=0 max=100 step=1 default=50 value=50 flags=slider
+  red_gamma_correction_1_0_1_10 0x0098c9c1 (int)    : min=1 max=40 step=1 default=10 value=10 flags=slider
+ blue_gamma_correction_1_0_1_10 0x0098c9c2 (int)    : min=1 max=40 step=1 default=10 value=10 flags=slider
+ green_gamma_correction_1_0_1_1 0x0098c9c3 (int)    : min=1 max=40 step=1 default=10 value=10 flags=slider
+           low_latency_controls 0x0098ca21 (int)    : min=2 max=8 step=1 default=4 value=4
+
+Image Source Controls
+
+              vertical_blanking 0x009e0901 (int)    : min=90 max=132840 step=1 default=2340 value=2340
+            horizontal_blanking 0x009e0902 (int)    : min=0 max=1048575 step=1 default=560 value=560 flags=read-only
+                  analogue_gain 0x009e0903 (int)    : min=0 max=240 step=1 default=0 value=0
+
+Image Processing Controls
+
+                 link_frequency 0x009f0901 (intmenu): min=0 max=0 default=0 value=0 flags=read-only
+                                0: 720000000 (0x2aea5400)
+                     pixel_rate 0x009f0902 (int64)  : min=594000000 max=594000000 step=1 default=594000000 value=594000000 flags=read-only
+```
+
+
+
+root@petalinux:~# media-ctl -V '"vcap_mipi_csi2_rx_v_proc_ss_sca":0 [fmt:UYVY8_1X16/3840x2160]'
+Unable to setup formats: Inappropriate ioctl for device (25)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+modetest -M xlnx -s 41@39:3840x2160-60@AR24
+modetest -M xlnx -s 41@39:3840x2160-60 -P 36@39:3840x2160@UYVY
+
+media-ctl -v -d /dev/media1 \
+-V "\"a0140000.v_tpg\":0 [fmt:YUYV8_1X16/1920x1080@1/60 field:none]"
+
+root@petalinux:~# media-ctl -d /dev/media1 -p                                                                                                                                                                      
+Media controller API version 5.15.36
+
+Media device information
+------------------------
+driver          xilinx-video
+model           Xilinx Video Composite Device
+serial          
+bus info        
+hw revision     0x0
+driver version  5.15.36
+
+Device topology
+- entity 1: vcap_tpg_input_v_tpg_0 output 0 (1 pad, 1 link)
+            type Node subtype V4L flags 0
+            device node name /dev/video1
+        pad0: Sink
+                <- "a0140000.v_tpg":1 [ENABLED]
+
+- entity 5: a0140000.v_tpg (2 pads, 1 link)
+            type V4L2 subdev subtype Unknown flags 0
+            device node name /dev/v4l-subdev6
+        pad0: Sink
+                [fmt:UYVY8_1X16/1920x1080@1/60 field:none colorspace:srgb]
+        pad1: Source
+                [fmt:UYVY8_1X16/1920x1080@1/60 field:none colorspace:srgb]
+                -> "vcap_tpg_input_v_tpg_0 output 0":0 [ENABLED]
+
+
+gst-launch-1.0 -v \
+v4l2src device=/dev/video1 io-mode=5 do-timestamp=true ! \
+video/x-raw,format=UYVY,width=1920,height=1080,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=36 sync=false
+
+
+media-ctl -v -d /dev/media1 \
+-V "\"a0140000.v_tpg\":0 [fmt:YUYV8_1X16/3840x2160@1/60 field:none]"
+
+
+root@petalinux:~# media-ctl -d /dev/media1 -p
+Media controller API version 5.15.36
+
+Media device information
+------------------------
+driver          xilinx-video
+model           Xilinx Video Composite Device
+serial          
+bus info        
+hw revision     0x0
+driver version  5.15.36
+
+Device topology
+- entity 1: vcap_tpg_input_v_tpg_0 output 0 (1 pad, 1 link)
+            type Node subtype V4L flags 0
+            device node name /dev/video1
+        pad0: Sink
+                <- "a0140000.v_tpg":1 [ENABLED]
+
+- entity 5: a0140000.v_tpg (2 pads, 1 link)
+            type V4L2 subdev subtype Unknown flags 0
+            device node name /dev/v4l-subdev6
+        pad0: Sink
+                [fmt:UYVY8_1X16/3840x2160@1/60 field:none colorspace:srgb]
+        pad1: Source
+                [fmt:UYVY8_1X16/3840x2160@1/60 field:none colorspace:srgb]
+                -> "vcap_tpg_input_v_tpg_0 output 0":0 [ENABLED]
+
+gst-launch-1.0 -v \
+v4l2src device=/dev/video1 io-mode=5 do-timestamp=true ! \
+video/x-raw,format=UYVY,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=36 sync=false
+
+
+
+v4l2-ctl -d /dev/video1 \
+  --set-fmt-video=width=3840,height=2160,pixelformat=UYVY \
+  --stream-mmap --stream-count=1 --stream-to=frame.raw
+
+v4l2-ctl -d /dev/video1 --stream-mmap --stream-count=1 --stream-to=test.raw
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+root@petalinux:~# media-ctl -d /dev/media0 -p                                                                                                                                                                      
+Media controller API version 5.15.36
+
+Media device information
+------------------------
+driver          xilinx-video
+model           Xilinx Video Composite Device
+serial          
+bus info        
+hw revision     0x0
+driver version  5.15.36
+
+Device topology
+- entity 1: vcap_mipi_csi2_rx_v_proc_ss_sca (1 pad, 1 link)
+            type Node subtype V4L flags 0
+            device node name /dev/video0
+        pad0: Sink
+                <- "a00c0000.v_proc_ss":1 [ENABLED]
+
+- entity 5: imx678 0-001a (1 pad, 1 link)
+            type V4L2 subdev subtype Sensor flags 0
+            device node name /dev/v4l-subdev0
+        pad0: Source
+                [fmt:SRGGB10_1X10/3840x2160 field:none colorspace:raw xfer:none]
+                -> "a0070000.mipi_csi2_rx_subsystem":0 [ENABLED]
+
+- entity 7: a0070000.mipi_csi2_rx_subsystem (2 pads, 2 links)
+            type V4L2 subdev subtype Unknown flags 0
+            device node name /dev/v4l-subdev1
+        pad0: Sink
+                [fmt:SRGGB10_1X10/3840x2160]
+                <- "imx678 0-001a":0 [ENABLED]
+        pad1: Source
+                [fmt:SRGGB10_1X10/3840x2160]
+                -> "a0080000.v_demosaic":0 [ENABLED]
+
+- entity 10: a0080000.v_demosaic (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev2
+        pad0: Sink
+                [fmt:SRGGB10_1X10/3840x2160]
+                <- "a0070000.mipi_csi2_rx_subsystem":1 [ENABLED]
+        pad1: Source
+                [fmt:RBG888_1X24/3840x2160]
+                -> "a00a0000.v_gamma_lut":0 [ENABLED]
+
+- entity 13: a00a0000.v_gamma_lut (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev3
+        pad0: Sink
+                [fmt:RBG888_1X24/3840x2160]
+                <- "a0080000.v_demosaic":1 [ENABLED]
+        pad1: Source
+                [fmt:RGB888_1X24/3840x2160]
+                -> "a0100000.v_proc_ss":0 [ENABLED]
+
+- entity 16: a0100000.v_proc_ss (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev4
+        pad0: Sink
+                [fmt:RBG888_1X24/3840x2160]
+                <- "a00a0000.v_gamma_lut":1 [ENABLED]
+        pad1: Source
+                [fmt:UYVY8_1X16/3840x2160]
+                -> "a00c0000.v_proc_ss":0 [ENABLED]
+
+- entity 19: a00c0000.v_proc_ss (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev5
+        pad0: Sink
+                [fmt:UYVY8_1X16/3840x2160]
+                <- "a0100000.v_proc_ss":1 [ENABLED]
+        pad1: Source
+                [fmt:UYVY8_1X16/3840x2160]
+                -> "vcap_mipi_csi2_rx_v_proc_ss_sca":0 [ENABLED]
+
+
+root@petalinux:~# v4l2-ctl -d /dev/video0 --list-formats-ext
+ioctl: VIDIOC_ENUM_FMT
+        Type: Video Capture Multiplanar
+
+        [0]: 'YUYV' (YUYV 4:2:2)
+        [1]: 'UYVY' (UYVY 4:2:2)
+        [2]: 'NM16' (Y/CbCr 4:2:2 (N-C))
+        [3]: 'NV16' (Y/CbCr 4:2:2)
+
+root@petalinux:~# v4l2-ctl -d /dev/video0 --get-fmt-video
+Format Video Capture Multiplanar:
+        Width/Height      : 1920/1080
+        Pixel Format      : 'UYVY' (UYVY 4:2:2)
+        Field             : None
+        Number of planes  : 1
+        Flags             : 
+        Colorspace        : Rec. 709
+        Transfer Function : Rec. 709
+        YCbCr/HSV Encoding: Rec. 709
+        Quantization      : Limited Range
+        Plane 0           :
+           Bytes per Line : 3840
+           Size Image     : 4147200
+
+
+
+
+
+
+
+
+
+
+
+
+
+media-ctl -V '"imx678 0-001a":0 [fmt:SRGGB10_1X10/3840x2160]'
+media-ctl -V '"a0070000.mipi_csi2_rx_subsystem":0 [fmt:SRGGB10_1X10/3840x2160]'
+media-ctl -V '"a0080000.v_demosaic":0 [fmt:SRGGB10_1X10/3840x2160]'
+media-ctl -V '"a0080000.v_demosaic":1 [fmt:RGB888_1X24/3840x2160]'
+media-ctl -V '"a00a0000.v_gamma_lut":0 [fmt:RGB888_1X24/3840x2160]'
+media-ctl -V '"a00a0000.v_gamma_lut":1 [fmt:RGB888_1X24/3840x2160]'
+media-ctl -V '"a0100000.v_proc_ss":0 [fmt:RGB888_1X24/3840x2160]'
+media-ctl -V '"a0100000.v_proc_ss":1 [fmt:UYVY/3840x2160]'
+media-ctl -V '"a00c0000.v_proc_ss":0 [fmt:UYVY/3840x2160]'
+media-ctl -V '"a00c0000.v_proc_ss":1 [fmt:UYVY/3840x2160]'
+media-ctl -V '"vcap_mipi_csi2_rx_v_proc_ss_sca":0 [fmt:UYVY/3840x2160]'
+
+
+media-ctl -d /dev/media0 -p
+
+v4l2-ctl -d /dev/video0 --stream-mmap --stream-count=1 --stream-to=test.raw
+
+v4l2-ctl -d /dev/video0 \
+  --set-fmt-video=width=3840,height=2160,pixelformat=YUYV \
+  --stream-mmap --stream-count=1 --stream-to=test.raw
+
+root@petalinux:~# v4l2-ctl -d /dev/video0 --get-fmt-video
+Format Video Capture Multiplanar:
+        Width/Height      : 3840/2160
+        Pixel Format      : 'YUYV' (YUYV 4:2:2)
+        Field             : None
+        Number of planes  : 1
+        Flags             : 
+        Colorspace        : Rec. 709
+        Transfer Function : Rec. 709
+        YCbCr/HSV Encoding: Rec. 709
+        Quantization      : Limited Range
+        Plane 0           :
+           Bytes per Line : 7680
+           Size Image     : 16588800
+
+v4l2-ctl -d /dev/video0 \
+  --set-fmt-video=width=3840,height=2160,pixelformat=UYVY \
+  --stream-mmap --stream-count=1 --stream-to=frame.raw
+
+
+
+
+v4l2-ctl -d /dev/video0 \
+  --set-fmt-video=width=3840,height=2160,pixelformat=UYVY
+  
+root@petalinux:~# v4l2-ctl -d /dev/video0 --get-fmt-video
+Format Video Capture Multiplanar:
+        Width/Height      : 3840/2160
+        Pixel Format      : 'UYVY' (UYVY 4:2:2)
+        Field             : None
+        Number of planes  : 1
+        Flags             : 
+        Colorspace        : Rec. 709
+        Transfer Function : Rec. 709
+        YCbCr/HSV Encoding: Rec. 709
+        Quantization      : Limited Range
+        Plane 0           :
+           Bytes per Line : 7680
+           Size Image     : 16588800
+
+
+
+
+
+
+```
+root@petalinux:~# v4l2-ctl -d /dev/video0 --stream-mmap --stream-count=1 --stream-to=test.raw
+                VIDIOC_STREAMON returned -1 (Broken pipe)
+
+```
+pipe在哪断了?
+
+
+
+gst-launch-1.0 -v \
+v4l2src device=/dev/video0 io-mode=5 do-timestamp=true ! \
+video/x-raw,format=UYVY,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=36 sync=false
+
+
+gst-launch-1.0 -v \
+v4l2src device=/dev/video0 io-mode=0 do-timestamp=true ! \
+video/x-raw,format=UYVY,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=36 sync=false
+
+
+
+
+```
+root@petalinux:~# dmesg | grep -i imx
+[   11.468177] imx678 0-001a: imx678_probe start
+[   11.472598] imx678 0-001a: imx678_power_on finished
+[   11.505550] imx678 0-001a: imx678_detect finished
+[   11.510280] imx678 0-001a: imx678_init_controls finished
+[   11.515594] imx678 0-001a: media_entity_pads_init finished
+[   11.521082] imx678 0-001a: v4l2_async_register_subdev_sensor finished
+[   11.527521] imx678 0-001a: imx678_probe finished
+root@petalinux:~#  -d /dev/video0 --stream-mmap --stream-count=1 --stream-to=test.raw
+                VIDIOC_STREAMON returned -1 (Broken pipe)
+
+```
+i2c总线监测,实际上启动过程读一次sensor id, 后续就没有动作了, 包括执行`v4l2-ctl -d /dev/video0 --stream-mmap --stream-count=1 --stream-to=test.raw`的时候没, 总线上都没有波形
+
+帮我分析驱动代码有没有问题
+
+
+
+
+v4l2-ctl -d /dev/video0 \
+  --set-fmt-video=width=3840,height=2160,pixelformat=UYVY
+  
+v4l2-ctl -d /dev/video0 --get-fmt-video
+v4l2-ctl -d /dev/video0 --stream-mmap --stream-count=1 --stream-to=test.raw --verbose
+
+VIDIOC_QUERYCAP: ok
+                VIDIOC_REQBUFS returned 0 (Success)
+                VIDIOC_QUERYBUF returned 0 (Success)
+                VIDIOC_QUERYBUF returned 0 (Success)
+                VIDIOC_QUERYBUF returned 0 (Success)
+                VIDIOC_QUERYBUF returned 0 (Success)
+                VIDIOC_QBUF returned 0 (Success)
+                VIDIOC_QBUF returned 0 (Success)
+                VIDIOC_QBUF returned 0 (Success)
+                VIDIOC_QBUF returned 0 (Success)
+                VIDIOC_STREAMON returned -1 (Broken pipe)
+
+
+
+root@petalinux:~# dmesg | grep -i imx
+[   11.476117] imx678 0-001a: imx678_probe start
+[   11.480509] imx678 0-001a: enter imx678_power_on()
+[   11.485330] imx678 0-001a: imx678_power_on finished
+[   11.517608] imx678 0-001a: imx678_detect finished
+[   11.522334] imx678 0-001a: imx678_init_controls finished
+[   11.527638] imx678 0-001a: media_entity_pads_init finished
+[   11.533120] imx678 0-001a: v4l2_async_register_subdev_sensor finished
+[   11.539555] imx678 0-001a: imx678_probe finished
+[   11.544566] imx678 0-001a: enter imx678_power_off()
+
+
+
+
+
+内核认为设备当前空闲，直接调用 power_off 把传感器关掉了, probe 结束部分的 pm_runtime_idle 已经注释掉了, 但是 还是被 power off了.
+v4l2-ctl -d /dev/video0 --stream-mmap ... 的时候, 没有触发 s_stream 的调用, 来power on
+回到一个根本的问题, 基于imx335修改是否合适? 已知 trd 是给的 imx274, 那么我向 0x1a 地址 imx274 的初始化序列, 起码要看到这些波形, 再来修改序列吧
+
+
+
+用imx274修改的也差不多, VIDIOC_STREAMON returned -1, 也就是说还是没有触发 s_stream 的调用
+
+
+
+
+
+
+
+media-ctl -p
+
+media-ctl -V '"imx678 0-001a":0 [fmt:SRGGB10_1X10/3840x2160]'
+media-ctl -V '"a0070000.mipi_csi2_rx_subsystem":0 [fmt:SRGGB10_1X10/3840x2160]'
+media-ctl -V '"a0080000.v_demosaic":0 [fmt:SRGGB10_1X10/3840x2160]'
+media-ctl -V '"a0080000.v_demosaic":1 [fmt:RBG888_1X24/3840x2160]'
+media-ctl -V '"a00a0000.v_gamma_lut":0 [fmt:RBG888_1X24/3840x2160]'
+media-ctl -V '"a00a0000.v_gamma_lut":1 [fmt:RBG888_1X24/3840x2160]'
+media-ctl -V '"a0100000.v_proc_ss":0 [fmt:RBG888_1X24/3840x2160]'
+media-ctl -V '"a0100000.v_proc_ss":1 [fmt:UYVY/3840x2160]'
+media-ctl -V '"a00c0000.v_proc_ss":0 [fmt:UYVY/3840x2160]'
+media-ctl -V '"a00c0000.v_proc_ss":1 [fmt:UYVY/3840x2160]'
+media-ctl -V '"vcap_mipi_csi2_rx_v_proc_ss_sca":0 [fmt:UYVY/3840x2160]'
+
+media-ctl -p
+
+
+
+modetest -M xlnx -s 41@39:3840x2160-60@AR24
+modetest -M xlnx -s 41@39:3840x2160-60 -P 36@39:3840x2160@UYVY
+gst-launch-1.0 -v \
+v4l2src device=/dev/video0 io-mode=5 do-timestamp=true ! \
+video/x-raw,format=UYVY,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=36 sync=false
+
+
+
+
+dmesg | tail -10
+
+
+
+root@petalinux:~# yavta -c10 -f YUYV -s 3840x2160 --skip 7 -F /dev/video0                                                                                                                                          
+Device /dev/video0 opened.
+Device `vcap_mipi_csi2_rx_v_proc_ss_sca' on `platform:vcap_mipi_csi2_rx_v_pr' is a video output (without mplanes) device.
+Video format set: YUYV (56595559) 3840x2160 field none, 1 planes: 
+ * Stride 7680, buffer size 16588800
+Video format: YUYV (56595559) 3840x2160 field none, 1 planes: 
+ * Stride 7680, buffer size 16588800
+8 buffers requested.
+length: 1 offset: 3590083232 timestamp type/source: mono/EoF
+Buffer 0/0 mapped at address 0xffff8d406000.
+length: 1 offset: 3590083232 timestamp type/source: mono/EoF
+Buffer 1/0 mapped at address 0xffff8c434000.
+length: 1 offset: 3590083232 timestamp type/source: mono/EoF
+Buffer 2/0 mapped at address 0xffff8b462000.
+length: 1 offset: 3590083232 timestamp type/source: mono/EoF
+Buffer 3/0 mapped at address 0xffff8a490000.
+length: 1 offset: 3590083232 timestamp type/source: mono/EoF
+Buffer 4/0 mapped at address 0xffff894be000.
+length: 1 offset: 3590083232 timestamp type/source: mono/EoF
+Buffer 5/0 mapped at address 0xffff884ec000.
+length: 1 offset: 3590083232 timestamp type/source: mono/EoF
+Buffer 6/0 mapped at address 0xffff8751a000.
+length: 1 offset: 3590083232 timestamp type/source: mono/EoF
+Buffer 7/0 mapped at address 0xffff86548000.
+Unable to start streaming: Broken pipe (32).
+8 buffers released.
+
+````
+
+参考 <https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/174719104/Zynq+UltraScale+MPSoC+VCU+TRD+-+Debugging+-+MIPI+CSI-2+Rx+Capture+Pipeline>
+
+`media-ctl -p -d /dev/media0`
+
+```
+# Sensor
+media-ctl -d /dev/media0 -V '"imx678 0-001a":0 [fmt:SRGGB8_1X8/3840x2160 field:none]'
+# MIPI CSI2-Rx Subsystem
+media-ctl -d /dev/media0 -V '"a0070000.mipi_csi2_rx_subsystem":0 [fmt:SRGGB8_1X8/3840x2160 field:none]'
+media-ctl -d /dev/media0 -V '"a0070000.mipi_csi2_rx_subsystem":1 [fmt:SRGGB8_1X8/3840x2160 field:none]'
+# Demosaic IP
+media-ctl -d /dev/media0 -V '"a0080000.v_demosaic":0 [fmt:SRGGB8_1X8/3840x2160 field:none]'
+media-ctl -d /dev/media0 -V '"a0080000.v_demosaic":1 [fmt:RBG888_1X24/3840x2160 field:none]'
+# Gamma LUT IP
+media-ctl -d /dev/media0 -V '"a00a0000.v_gamma_lut":0 [fmt:RBG888_1X24/3840x2160 field:none]'
+media-ctl -d /dev/media0 -V '"a00a0000.v_gamma_lut":1 [fmt:RBG888_1X24/3840x2160 field:none]'
+# VPSS: Color Space Conversion (CSC) Only
+media-ctl -d /dev/media0 -V '"a0100000.v_proc_ss":0 [fmt:RBG888_1X24/3840x2160 field:none]'
+media-ctl -d /dev/media0 -V '"a0100000.v_proc_ss":1 [fmt:RBG888_1X24/3840x2160 field:none]'
+#VPSS: Scaler Only with CSC
+media-ctl -d /dev/media0 -V '"a00c0000.v_proc_ss":0 [fmt:RBG888_1X24/3840x2160 field:none]'
+media-ctl -d /dev/media0 -V '"a00c0000.v_proc_ss":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]'
+```
+==
+```
+media-ctl -d /dev/media0 -V "\"imx678 0-001a\":0 [fmt:SRGGB8_1X8/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":0 [fmt:SRGGB8_1X8/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":1 [fmt:SRGGB8_1X8/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":0 [fmt:SRGGB8_1X8/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+```
+
+```
+root@petalinux:~# media-ctl -p -d /dev/media0
+Media controller API version 5.15.36
+
+Media device information
+------------------------
+driver          xilinx-video
+model           Xilinx Video Composite Device
+serial          
+bus info        
+hw revision     0x0
+driver version  5.15.36
+
+Device topology
+- entity 1: vcap_mipi_csi2_rx_v_proc_ss_sca (1 pad, 1 link)
+            type Node subtype V4L flags 0
+            device node name /dev/video0
+        pad0: Sink
+                <- "a00c0000.v_proc_ss":1 [ENABLED]
+
+- entity 5: IMX678 0-001a (1 pad, 1 link)
+            type V4L2 subdev subtype Sensor flags 0
+            device node name /dev/v4l-subdev0
+        pad0: Source
+                [fmt:SRGGB10_1X10/3840x2160@1/60 field:none colorspace:srgb
+                 crop.bounds:(0,0)/3840x2160
+                 crop:(0,0)/3840x2160
+                 compose.bounds:(0,0)/3840x2160
+                 compose:(0,0)/3840x2160]
+                -> "a0070000.mipi_csi2_rx_subsystem":0 [ENABLED]
+
+- entity 7: a0070000.mipi_csi2_rx_subsystem (2 pads, 2 links)
+            type V4L2 subdev subtype Unknown flags 0
+            device node name /dev/v4l-subdev1
+        pad0: Sink
+                [fmt:SRGGB8_1X8/3840x2160 field:none]
+                <- "IMX678 0-001a":0 [ENABLED]
+        pad1: Source
+                [fmt:SRGGB8_1X8/3840x2160 field:none]
+                -> "a0080000.v_demosaic":0 [ENABLED]
+
+- entity 10: a0080000.v_demosaic (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev2
+        pad0: Sink
+                [fmt:SRGGB8_1X8/3840x2160 field:none]
+                <- "a0070000.mipi_csi2_rx_subsystem":1 [ENABLED]
+        pad1: Source
+                [fmt:RBG888_1X24/3840x2160 field:none]
+                -> "a00a0000.v_gamma_lut":0 [ENABLED]
+
+- entity 13: a00a0000.v_gamma_lut (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev3
+        pad0: Sink
+                [fmt:RBG888_1X24/3840x2160 field:none]
+                <- "a0080000.v_demosaic":1 [ENABLED]
+        pad1: Source
+                [fmt:RBG888_1X24/3840x2160 field:none]
+                -> "a0100000.v_proc_ss":0 [ENABLED]
+
+- entity 16: a0100000.v_proc_ss (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev4
+        pad0: Sink
+                [fmt:RBG888_1X24/3840x2160 field:none]
+                <- "a00a0000.v_gamma_lut":1 [ENABLED]
+        pad1: Source
+                [fmt:RBG888_1X24/3840x2160 field:none]
+                -> "a00c0000.v_proc_ss":0 [ENABLED]
+
+- entity 19: a00c0000.v_proc_ss (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev5
+        pad0: Sink
+                [fmt:RBG888_1X24/3840x2160 field:none]
+                <- "a0100000.v_proc_ss":1 [ENABLED]
+        pad1: Source
+                [fmt:VYYUYY8_1X24/3840x2160 field:none]
+                -> "vcap_mipi_csi2_rx_v_proc_ss_sca":0 [ENABLED]
+```
+
+mipi_csi2_rx_subsystem 这里和文章里不一样
+```
+root@petalinux:~# yavta -l /dev/v4l-subdev1
+Device /dev/v4l-subdev1 opened.
+--- User Controls (class 0x00980001) ---
+control 0x00980911 `Exposure' min 14 max 16666 step 1 default 14 current 14.
+control 0x00980913 `Gain' min 256 max 46088 step 1 default 5120 current 5120.
+control 0x00980915 `Vertical Flip' min 0 max 1 step 1 default 0 current 0.
+control 0x0098c9a1 `CSC Brightness' min 0 max 100 step 1 default 50 current 80.
+control 0x0098c9a2 `CSC Contrast' min 0 max 100 step 1 default 50 current 55.
+control 0x0098c9a3 `CSC Red Gain' min 0 max 100 step 1 default 50 current 35.
+control 0x0098c9a4 `CSC Green Gain' min 0 max 100 step 1 default 50 current 24.
+control 0x0098c9a5 `CSC Blue Gain' min 0 max 100 step 1 default 50 current 40.
+control 0x0098c9c1 `Red Gamma Correction|1->0.1|10-' min 1 max 40 step 1 default 10 current 10.
+control 0x0098c9c2 `Blue Gamma Correction|1->0.1|10' min 1 max 40 step 1 default 10 current 10.
+control 0x0098c9c3 `Green Gamma Correction|1->0.1|1' min 1 max 40 step 1 default 10 current 10.
+control 0x0098ca21 `Low Latency Controls' min 2 max 8 step 1 default 4 current 4.
+--- Image Processing Controls (class 0x009f0001) ---
+control 0x009f0903 `Test Pattern' min 0 max 12 step 1 default 0 current 0.
+  0: Disabled (*)
+  1: All 000h Pattern
+  2: All FFFh Pattern
+  3: All 555h Pattern
+  4: All AAAh Pattern
+  5: Vertical Stripe (555h / AAAh)
+  6: Vertical Stripe (AAAh / 555h)
+  7: Vertical Stripe (000h / 555h)
+  8: Vertical Stripe (555h / 000h)
+  9: Vertical Stripe (000h / FFFh)
+  10: Vertical Stripe (FFFh / 000h)
+  11: Vertical Color Bars
+  12: Horizontal Color Bars
+13 controls found.
+Unable to get format: Inappropriate ioctl for device (25).
+
+```
+
+```
+root@petalinux:~# yavta -l /dev/v4l-subdev4
+Device /dev/v4l-subdev4 opened.
+--- User Controls (class 0x00980001) ---
+control 0x0098c9a1 `CSC Brightness' min 0 max 100 step 1 default 50 current 50.
+control 0x0098c9a2 `CSC Contrast' min 0 max 100 step 1 default 50 current 50.
+control 0x0098c9a3 `CSC Red Gain' min 0 max 100 step 1 default 50 current 50.
+control 0x0098c9a4 `CSC Green Gain' min 0 max 100 step 1 default 50 current 50.
+control 0x0098c9a5 `CSC Blue Gain' min 0 max 100 step 1 default 50 current 50.
+5 controls found.
+Unable to get format: Inappropriate ioctl for device (25).
+
+
+yavta -w '0x0098c9a1 80' /dev/v4l-subdev4
+yavta -w '0x0098c9a2 55' /dev/v4l-subdev4
+yavta -w '0x0098c9a3 35' /dev/v4l-subdev4
+yavta -w '0x0098c9a4 24' /dev/v4l-subdev4
+yavta -w '0x0098c9a5 40' /dev/v4l-subdev4
+```
+
+
+
+```
+#Make sure modetest is no longer running
+$ killall modetest
+#Use GStreamer to pipe the output from the MIPI Rx to the HDMI Tx
+$ gst-launch-1.0 v4l2src device=/dev/video0 '!' video/x-raw, width=3840, height=2160, framerate=60/1 '!' queue '!' kmssink bus-id=a0060000.v_mix fullscreen-overlay=1
+```
+闪一下蓝屏
+```
+root@petalinux:~# gst-launch-1.0 v4l2src device=/dev/video0 '!' video/x-raw, width=3840, height=2160, framerate=60/1 '!' queue '!' kmssink bus-id=a0060000.v_mix fullscreen-overlay=1
+Setting pipeline to PAUSED ...
+Pipeline is live and does not need PREROLL ...
+Pipeline is PREROLLED ...
+Setting pipeline to PLAYING ...
+New clock: GstSystemClock
+ERROR: from element /GstPipeline:pipeline0/GstV4l2Src:v4l2src0: Failed to allocate required memory.
+Additional debug info:
+../git/sys/v4l2/gstv4l2src.c(759): gst_v4l2src_decide_allocation (): /GstPipeline:pipeline0/GstV4l2Src:v4l2src0:
+Buffer pool activation failed
+Execution ended after 0:00:00.259607970
+Setting pipeline to NULL ...
+ERROR: from element /GstPipeline:pipeline0/GstV4l2Src:v4l2src0: Internal data stream error.
+Additional debug info:
+../git/libs/gst/base/gstbasesrc.c(3127): gst_base_src_loop (): /GstPipeline:pipeline0/GstV4l2Src:v4l2src0:
+streaming stopped, reason not-negotiated (-4)
+Freeing pipeline ...
+
+```
+
+
+
+
+
+
+```
+root@petalinux:~# yavta --enum-formats /dev/video1 
+Device /dev/video1 opened.
+Device `vcap_tpg_input_v_tpg_0 output 0' on `platform:vcap_tpg_input_v_tpg_0' is a video output (without mplanes) device.
+- Available formats:
+        Format 0: YUYV (56595559)
+        Type: Video capture mplanes (9)
+        Name: YUYV 4:2:2
+
+        Format 1: UYVY (59565955)
+        Type: Video capture mplanes (9)
+        Name: UYVY 4:2:2
+
+        Format 2: NV16M (36314d4e)
+        Type: Video capture mplanes (9)
+        Name: Y/CbCr 4:2:2 (N-C)
+
+        Format 3: NV16 (3631564e)
+        Type: Video capture mplanes (9)
+        Name: Y/CbCr 4:2:2
+
+Video format: YUYV (56595559) 1920x0 field none, 0 planes: 
+root@petalinux:~# yavta --enum-formats /dev/video0 
+Device /dev/video0 opened.
+Device `vcap_mipi_csi2_rx_v_proc_ss_sca' on `platform:vcap_mipi_csi2_rx_v_pr' is a video output (without mplanes) device.
+- Available formats:
+        Format 0: NV12M (32314d4e)
+        Type: Video capture mplanes (9)
+        Name: Y/CbCr 4:2:0 (N-C)
+
+        Format 1: NV12 (3231564e)
+        Type: Video capture mplanes (9)
+        Name: Y/CbCr 4:2:0
+
+Video format: NV12 (3231564e) 3840x2160 field none, 1 planes: 
+ * Stride 3840, buffer size 1244160
+ 
+ root@petalinux:~# v4l2-ctl -d /dev/video0 --list-formats-ext
+ioctl: VIDIOC_ENUM_FMT
+        Type: Video Capture Multiplanar
+
+        [0]: 'NM12' (Y/CbCr 4:2:0 (N-C))
+        [1]: 'NV12' (Y/CbCr 4:2:0)
+
+```
+
+
+
+```
+root@petalinux:~# yavta -n 3 -c10 -f NV12 -s 3840x2160 --skip 7 -F /dev/video0
+Device /dev/video0 opened.
+Device `vcap_mipi_csi2_rx_v_proc_ss_sca' on `platform:vcap_mipi_csi2_rx_v_pr' is a video output (without mplanes) device.
+Video format set: NV12 (3231564e) 3840x2160 field none, 1 planes: 
+ * Stride 3840, buffer size 12441600
+Video format: NV12 (3231564e) 3840x2160 field none, 1 planes: 
+ * Stride 3840, buffer size 12441600
+3 buffers requested.
+length: 1 offset: 3883600240 timestamp type/source: mono/EoF
+Buffer 0/0 mapped at address 0xffffaed88000.
+length: 1 offset: 3883600240 timestamp type/source: mono/EoF
+Buffer 1/0 mapped at address 0xffffae1aa000.
+length: 1 offset: 3883600240 timestamp type/source: mono/EoF
+Buffer 2/0 mapped at address 0xffffad5cc000.
+Unable to start streaming: Broken pipe (32).
+3 buffers released.
+```
+
+
+
+对比`tpg`
+
+```
+gst-launch-1.0 v4l2src device=/dev/video1 '!' video/x-raw, format=UYVY, width=3840, height=2160, framerate=60/1 '!' queue '!' kmssink bus-id=a0060000.v_mix fullscreen-overlay=1 plane-id=36
+
+gst-launch-1.0 -v \
+v4l2src device=/dev/video1 io-mode=5 do-timestamp=true ! \
+video/x-raw,format=UYVY,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=36 sync=false fullscreen-overlay=1
+
+
+```
+
+
+
+`camera`还是没有触发 s_stream 调用
+
+
+
+给出`24MHz`的sensor配置, 强制出视频流. 不得行 (`v4l2-ctl -d /dev/video0 --stream-mmap --verbose`)
+
+```
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x00 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x01 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x02 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x14 0x04
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x15 0x03
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x18 0x04
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x22 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x23 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x2C 0x26
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x2D 0x02
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x3C 0x08
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x3D 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x3E 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x3F 0x0F
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x44 0x14
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x45 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x46 0x70
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x47 0x08
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x40 0x03
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x50 0x44
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x51 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x52 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x30 0xA6 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x70 0x42
+i2ctransfer -f -y 0 w3@0x1A 0x30 0xDC 0x10
+i2ctransfer -f -y 0 w3@0x1A 0x30 0xDD 0x10
+i2ctransfer -f -y 0 w3@0x1A 0x34 0x60 0x22
+i2ctransfer -f -y 0 w3@0x1A 0x35 0x5A 0x64
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x02 0x7A
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x10 0xEC
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x12 0x71
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x14 0xDE
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x20 0x2B
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x24 0x22
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x25 0x25
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x26 0x2A
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x27 0x2C
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x28 0x39
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x29 0x38
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x30 0x04
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x31 0x04
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x32 0x03
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x33 0x03
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x34 0x09
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x35 0x06
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x38 0xCD
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x3A 0x4C
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x3C 0xB9
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x3E 0x30
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x40 0x2C
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x42 0x39
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x4E 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x52 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x56 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x5A 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x5E 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x62 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x6E 0xA0
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x70 0x50
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x8C 0x04
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x8D 0x03
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x8E 0x09
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x90 0x38
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x91 0x42
+i2ctransfer -f -y 0 w3@0x1A 0x3A 0x92 0x3C
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x0E 0xF3
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x12 0xE5
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x27 0xC0
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x2E 0xEF
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x30 0x6A
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x32 0xF6
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x36 0xE1
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x3A 0xE8
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x5A 0x17
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x5E 0xEF
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x60 0x6A
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x62 0xF6
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x66 0xE1
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x6A 0xE8
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x88 0xEC
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x8A 0xED
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x94 0x71
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x96 0x72
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x98 0xDE
+i2ctransfer -f -y 0 w3@0x1A 0x3B 0x9A 0xDF
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x0F 0x06
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x10 0x06
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x11 0x06
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x12 0x06
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x13 0x06
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x18 0x20
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x3A 0x7a
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x40 0xf4
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x48 0xe6
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x54 0xce
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x56 0xd0
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x6C 0x53
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x6E 0x55
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x70 0xc0
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x72 0xc2
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x7E 0xce
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x8C 0xcf
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x8E 0xeb
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x98 0x54
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x9A 0x70
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x9C 0xc1
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0x9E 0xdd
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xB0 0x7A
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xB2 0xba
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xC8 0xbc
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xCA 0x7c
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xD4 0xea
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xD5 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xD6 0x4a
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xD8 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xD9 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xDA 0xff
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xDB 0x03
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xDC 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xDD 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xDE 0xff
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xDF 0x03
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xE4 0x4c
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xE6 0xec
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xE7 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xE8 0xff
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xE9 0x03
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xEA 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xEB 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xEC 0xff
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xED 0x03
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xEE 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x3C 0xEF 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x3E 0x28 0x82
+i2ctransfer -f -y 0 w3@0x1A 0x3E 0x2A 0x80
+i2ctransfer -f -y 0 w3@0x1A 0x3E 0x30 0x85
+i2ctransfer -f -y 0 w3@0x1A 0x3E 0x32 0x7d
+i2ctransfer -f -y 0 w3@0x1A 0x3E 0x5C 0xce
+i2ctransfer -f -y 0 w3@0x1A 0x3E 0x5E 0xd3
+i2ctransfer -f -y 0 w3@0x1A 0x3E 0x70 0x53
+i2ctransfer -f -y 0 w3@0x1A 0x3E 0x72 0x58
+i2ctransfer -f -y 0 w3@0x1A 0x3E 0x74 0xc0
+i2ctransfer -f -y 0 w3@0x1A 0x3E 0x76 0xc5
+i2ctransfer -f -y 0 w3@0x1A 0x3E 0x78 0xc0
+i2ctransfer -f -y 0 w3@0x1A 0x3E 0x79 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x3E 0x7A 0xd4
+i2ctransfer -f -y 0 w3@0x1A 0x3E 0x7B 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x3E 0xB4 0x0b
+i2ctransfer -f -y 0 w3@0x1A 0x3E 0xB5 0x02
+i2ctransfer -f -y 0 w3@0x1A 0x3E 0xB6 0x4d
+i2ctransfer -f -y 0 w3@0x1A 0x3E 0xEC 0xf3
+i2ctransfer -f -y 0 w3@0x1A 0x3E 0xEE 0xe7
+i2ctransfer -f -y 0 w3@0x1A 0x3F 0x01 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x3F 0x24 0x10
+i2ctransfer -f -y 0 w3@0x1A 0x3F 0x28 0x2d
+i2ctransfer -f -y 0 w3@0x1A 0x3F 0x2A 0x2d
+i2ctransfer -f -y 0 w3@0x1A 0x3F 0x2C 0x2d
+i2ctransfer -f -y 0 w3@0x1A 0x3F 0x2E 0x2d
+i2ctransfer -f -y 0 w3@0x1A 0x3F 0x30 0x23
+i2ctransfer -f -y 0 w3@0x1A 0x3F 0x38 0x2d
+i2ctransfer -f -y 0 w3@0x1A 0x3F 0x3A 0x2d
+i2ctransfer -f -y 0 w3@0x1A 0x3F 0x3C 0x2d
+i2ctransfer -f -y 0 w3@0x1A 0x3F 0x3E 0x28
+i2ctransfer -f -y 0 w3@0x1A 0x3F 0x40 0x1e
+i2ctransfer -f -y 0 w3@0x1A 0x3F 0x48 0x2d
+i2ctransfer -f -y 0 w3@0x1A 0x3F 0x4A 0x2d
+i2ctransfer -f -y 0 w3@0x1A 0x40 0x04 0xe4
+i2ctransfer -f -y 0 w3@0x1A 0x40 0x06 0xff
+i2ctransfer -f -y 0 w3@0x1A 0x40 0x18 0x69
+i2ctransfer -f -y 0 w3@0x1A 0x40 0x1A 0x84
+i2ctransfer -f -y 0 w3@0x1A 0x40 0x1C 0xd6
+i2ctransfer -f -y 0 w3@0x1A 0x40 0x1E 0xf1
+i2ctransfer -f -y 0 w3@0x1A 0x40 0x38 0xde
+i2ctransfer -f -y 0 w3@0x1A 0x40 0x3A 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x40 0x3B 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x40 0x4C 0x63
+i2ctransfer -f -y 0 w3@0x1A 0x40 0x4E 0x85
+i2ctransfer -f -y 0 w3@0x1A 0x40 0x50 0xd0
+i2ctransfer -f -y 0 w3@0x1A 0x40 0x52 0xf2
+i2ctransfer -f -y 0 w3@0x1A 0x41 0x08 0xdd
+i2ctransfer -f -y 0 w3@0x1A 0x41 0x0A 0xf7
+i2ctransfer -f -y 0 w3@0x1A 0x41 0x1C 0x62
+i2ctransfer -f -y 0 w3@0x1A 0x41 0x1E 0x7c
+i2ctransfer -f -y 0 w3@0x1A 0x41 0x20 0xcf
+i2ctransfer -f -y 0 w3@0x1A 0x41 0x22 0xe9
+i2ctransfer -f -y 0 w3@0x1A 0x41 0x38 0xe6
+i2ctransfer -f -y 0 w3@0x1A 0x41 0x3A 0xf1
+i2ctransfer -f -y 0 w3@0x1A 0x41 0x4C 0x6b
+i2ctransfer -f -y 0 w3@0x1A 0x41 0x4E 0x76
+i2ctransfer -f -y 0 w3@0x1A 0x41 0x50 0xd8
+i2ctransfer -f -y 0 w3@0x1A 0x41 0x52 0xe3
+i2ctransfer -f -y 0 w3@0x1A 0x41 0x7E 0x03
+i2ctransfer -f -y 0 w3@0x1A 0x41 0x7F 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x41 0x86 0xe0
+i2ctransfer -f -y 0 w3@0x1A 0x41 0x90 0xf3
+i2ctransfer -f -y 0 w3@0x1A 0x41 0x92 0xf7
+i2ctransfer -f -y 0 w3@0x1A 0x41 0x9C 0x78
+i2ctransfer -f -y 0 w3@0x1A 0x41 0x9E 0x7c
+i2ctransfer -f -y 0 w3@0x1A 0x41 0xA0 0xe5
+i2ctransfer -f -y 0 w3@0x1A 0x41 0xA2 0xe9
+i2ctransfer -f -y 0 w3@0x1A 0x41 0xC8 0xe2
+i2ctransfer -f -y 0 w3@0x1A 0x41 0xCA 0xfd
+i2ctransfer -f -y 0 w3@0x1A 0x41 0xDC 0x67
+i2ctransfer -f -y 0 w3@0x1A 0x41 0xDE 0x82
+i2ctransfer -f -y 0 w3@0x1A 0x41 0xE0 0xd4
+i2ctransfer -f -y 0 w3@0x1A 0x41 0xE2 0xef
+i2ctransfer -f -y 0 w3@0x1A 0x42 0x00 0xde
+i2ctransfer -f -y 0 w3@0x1A 0x42 0x02 0xda
+i2ctransfer -f -y 0 w3@0x1A 0x42 0x18 0x63
+i2ctransfer -f -y 0 w3@0x1A 0x42 0x1A 0x5f
+i2ctransfer -f -y 0 w3@0x1A 0x42 0x1C 0xd0
+i2ctransfer -f -y 0 w3@0x1A 0x42 0x1E 0xcc
+i2ctransfer -f -y 0 w3@0x1A 0x42 0x5A 0x82
+i2ctransfer -f -y 0 w3@0x1A 0x42 0x5C 0xef
+i2ctransfer -f -y 0 w3@0x1A 0x43 0x48 0xfe
+i2ctransfer -f -y 0 w3@0x1A 0x43 0x49 0x06
+i2ctransfer -f -y 0 w3@0x1A 0x43 0x52 0xce
+i2ctransfer -f -y 0 w3@0x1A 0x44 0x20 0x0b
+i2ctransfer -f -y 0 w3@0x1A 0x44 0x21 0x02
+i2ctransfer -f -y 0 w3@0x1A 0x44 0x22 0x4d
+i2ctransfer -f -y 0 w3@0x1A 0x44 0x26 0xf5
+i2ctransfer -f -y 0 w3@0x1A 0x44 0x2A 0xe7
+i2ctransfer -f -y 0 w3@0x1A 0x44 0x32 0xf5
+i2ctransfer -f -y 0 w3@0x1A 0x44 0x36 0xe7
+i2ctransfer -f -y 0 w3@0x1A 0x44 0x66 0xb4
+i2ctransfer -f -y 0 w3@0x1A 0x44 0x6E 0x32
+i2ctransfer -f -y 0 w3@0x1A 0x44 0x9F 0x1c
+i2ctransfer -f -y 0 w3@0x1A 0x44 0xA4 0x2c
+i2ctransfer -f -y 0 w3@0x1A 0x44 0xA6 0x2c
+i2ctransfer -f -y 0 w3@0x1A 0x44 0xA8 0x2c
+i2ctransfer -f -y 0 w3@0x1A 0x44 0xAA 0x2c
+i2ctransfer -f -y 0 w3@0x1A 0x44 0xB4 0x2c
+i2ctransfer -f -y 0 w3@0x1A 0x44 0xB6 0x2c
+i2ctransfer -f -y 0 w3@0x1A 0x44 0xB8 0x2c
+i2ctransfer -f -y 0 w3@0x1A 0x44 0xBA 0x2c
+i2ctransfer -f -y 0 w3@0x1A 0x44 0xC4 0x2c
+i2ctransfer -f -y 0 w3@0x1A 0x44 0xC6 0x2c
+i2ctransfer -f -y 0 w3@0x1A 0x44 0xC8 0x2c
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x06 0xf3
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x0E 0xe5
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x16 0xf3
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x22 0xe5
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x24 0xf3
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x2C 0xe5
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x3C 0x22
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x3D 0x1b
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x3E 0x1b
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x3F 0x15
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x40 0x15
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x41 0x15
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x42 0x15
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x43 0x15
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x44 0x15
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x48 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x49 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x4A 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x4B 0x06
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x4C 0x06
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x4D 0x06
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x4E 0x06
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x4F 0x06
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x50 0x06
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x54 0x55
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x55 0x02
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x56 0x42
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x57 0x05
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x58 0xfd
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x59 0x05
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x5A 0x94
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x5B 0x06
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x5D 0x06
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x5E 0x49
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x5F 0x07
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x60 0x7f
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x61 0x07
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x62 0xa5
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x64 0x55
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x65 0x02
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x66 0x42
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x67 0x05
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x68 0xfd
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x69 0x05
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x6A 0x94
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x6B 0x06
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x6D 0x06
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x6E 0x49
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x6F 0x07
+i2ctransfer -f -y 0 w3@0x1A 0x45 0x72 0xa5
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x0C 0x7d
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x0E 0xb1
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x14 0xa8
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x16 0xb2
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x1C 0x7e
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x1E 0xa7
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x24 0xa8
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x26 0xb2
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x2C 0x7e
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x2E 0x8a
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x30 0x94
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x32 0xa7
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x34 0xfb
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x36 0x2f
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x38 0x81
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x39 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x3A 0xb5
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x3B 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x3C 0x26
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x3E 0x30
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x40 0xac
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x41 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x42 0xb6
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x43 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x44 0xfc
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x46 0x25
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x48 0x82
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x49 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x4A 0xab
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x4B 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x4C 0x26
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x4E 0x30
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x54 0xfc
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x56 0x08
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x58 0x12
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x5A 0x25
+i2ctransfer -f -y 0 w3@0x1A 0x46 0x62 0xfc
+i2ctransfer -f -y 0 w3@0x1A 0x46 0xA2 0xfb
+i2ctransfer -f -y 0 w3@0x1A 0x46 0xD6 0xf3
+i2ctransfer -f -y 0 w3@0x1A 0x46 0xE6 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x46 0xE8 0xff
+i2ctransfer -f -y 0 w3@0x1A 0x46 0xE9 0x03
+i2ctransfer -f -y 0 w3@0x1A 0x46 0xEC 0x7a
+i2ctransfer -f -y 0 w3@0x1A 0x46 0xEE 0xe5
+i2ctransfer -f -y 0 w3@0x1A 0x46 0xF4 0xee
+i2ctransfer -f -y 0 w3@0x1A 0x46 0xF6 0xf2
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x0C 0xff
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x0D 0x03
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x0E 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x14 0xe0
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x16 0xe4
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x1E 0xed
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x2E 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x30 0xff
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x31 0x03
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x34 0x7b
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x36 0xdf
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x54 0x7d
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x56 0x8b
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x58 0x93
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x5A 0xb1
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x5C 0xfb
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x5E 0x09
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x60 0x11
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x62 0x2f
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x66 0xcc
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x76 0xcb
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x7E 0x4a
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x8E 0x49
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x94 0x7c
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x96 0x8f
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x98 0xb3
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x99 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x9A 0xcc
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x9C 0xc1
+i2ctransfer -f -y 0 w3@0x1A 0x47 0x9E 0xcb
+i2ctransfer -f -y 0 w3@0x1A 0x47 0xA4 0x7d
+i2ctransfer -f -y 0 w3@0x1A 0x47 0xA6 0x8e
+i2ctransfer -f -y 0 w3@0x1A 0x47 0xA8 0xb4
+i2ctransfer -f -y 0 w3@0x1A 0x47 0xA9 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x47 0xAA 0xc0
+i2ctransfer -f -y 0 w3@0x1A 0x47 0xAC 0xfa
+i2ctransfer -f -y 0 w3@0x1A 0x47 0xAE 0x0d
+i2ctransfer -f -y 0 w3@0x1A 0x47 0xB0 0x31
+i2ctransfer -f -y 0 w3@0x1A 0x47 0xB1 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x47 0xB2 0x4a
+i2ctransfer -f -y 0 w3@0x1A 0x47 0xB3 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x47 0xB4 0x3f
+i2ctransfer -f -y 0 w3@0x1A 0x47 0xB6 0x49
+i2ctransfer -f -y 0 w3@0x1A 0x47 0xBC 0xfb
+i2ctransfer -f -y 0 w3@0x1A 0x47 0xBE 0x0c
+i2ctransfer -f -y 0 w3@0x1A 0x47 0xC0 0x32
+i2ctransfer -f -y 0 w3@0x1A 0x47 0xC1 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x47 0xC2 0x3e
+i2ctransfer -f -y 0 w3@0x1A 0x47 0xC3 0x01
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x00 0x00
+i2ctransfer -f -y 0 w3@0x1A 0x30 0x02 0x00
+```
+
+
+
+
+
+```
+#############NG VIDIOC_STREAMON returned -1 (Broken pipe)
+media-ctl -d /dev/media0 -V "\"imx678 0-001a\":0 [fmt:SRGGB8_1X8/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":0 [fmt:SRGGB8_1X8/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":1 [fmt:SRGGB8_1X8/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":0 [fmt:SRGGB8_1X8/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":0 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+
+
+#############NG VIDIOC_REQBUFS returned -1 (Invalid argument)
+media-ctl -d /dev/media0 -V "\"imx678 0-001a\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":1 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":0 [fmt:SRGGB8_1X8/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":0 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+
+
+
+#############NG VIDIOC_STREAMON returned -1 (Broken pipe)
+media-ctl -d /dev/media0 -V "\"imx678 0-001a\":0 [fmt:SRGGB8_1X8/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":0 [fmt:SRGGB8_1X8/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":1 [fmt:SRGGB8_1X8/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":0 [fmt:SRGGB8_1X8/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":0 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+
+#############NG 系统挂了
+media-ctl -d /dev/media0 -V "\"imx678 0-001a\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":1 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":0 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+
+```
+
+最后一组, 如果再执行
+
+```
+gst-launch-1.0 v4l2src device=/dev/video0 '!' video/x-raw, format=NV12, width=3840, height=2160, framerate=60/1 '!' queue '!' kmssink bus-id=a0060000.v_mix fullscreen-overlay=1
+
+v4l2-ctl -d /dev/video0 --stream-mmap --verbose
+
+media-ctl -p -d /dev/media0
+```
+
+会卡死, `i2c`总线也没有出波形
+
+
+
+#### 查哪一个`s_stream`返回非0
+
+```
+petalinux/components/yocto/workspace/sources/linux-xlnx/drivers/media
+$ grep -R VIDIOC_STREAMON
+v4l2-core/v4l2-dev.c:		SET_VALID_IOCTL(ops, VIDIOC_STREAMON, vidioc_streamon);
+v4l2-core/v4l2-ioctl.c:	IOCTL_INFO(VIDIOC_STREAMON, v4l_streamon, v4l_print_buftype, INFO_FL_PRIO | INFO_FL_QUEUE),
+v4l2-core/v4l2-ioctl.c:	    (cmd == VIDIOC_STREAMON || cmd == VIDIOC_STREAMOFF)) {
+common/saa7146/saa7146_video.c:	DEB_D("VIDIOC_STREAMON, type:%d\n", type);
+test-drivers/vivid/vivid-ctrls.c:	.name = "Inject VIDIOC_STREAMON Error",
+pci/bt8xx/bttv-driver.c:   VIDEO_STREAM VIDIOC_STREAMON             VIDIOC_STREAMOFF
+pci/bt8xx/bttv-driver.c:   VBI		 VIDIOC_STREAMON             VIDIOC_STREAMOFF
+pci/bt8xx/bttv-driver.c:   4) This is a continuous read, implies VIDIOC_STREAMON.
+usb/cpia2/cpia2_v4l.c:	DBG("VIDIOC_STREAMON, streaming=%d\n", cam->streaming);
+
+$ grep -R ".s_stream =" .
+./i2c/imx219.c:	.s_stream = imx219_set_stream,
+./i2c/imx258.c:	.s_stream = imx258_set_stream,
+./i2c/tvp514x.c:	.s_stream = tvp514x_s_stream,
+./i2c/imx335.c:	.s_stream = imx335_set_stream,
+./i2c/ov7740.c:	.s_stream = ov7740_set_stream,
+./i2c/imx678.c:	.s_stream = imx678_s_stream,
+./i2c/ks0127.c:	.s_stream = ks0127_s_stream,
+./i2c/tvp7002.c:	.s_stream = tvp7002_s_stream,
+./i2c/saa717x.c:	.s_stream = saa717x_s_stream,
+./i2c/ov5645.c:	.s_stream = ov5645_s_stream,
+./i2c/adv7511-v4l2.c:	.s_stream = adv7511_s_stream,
+./i2c/adv7511-v4l2.c:	.s_stream = adv7511_s_audio_stream,
+./i2c/bt819.c:	.s_stream = bt819_s_stream,
+./i2c/ov5640.c:	.s_stream = ov5640_s_stream,
+./i2c/ov5670.c:	.s_stream = ov5670_set_stream,
+./i2c/ov2659.c:	.s_stream = ov2659_s_stream,
+./i2c/saa7110.c:	.s_stream = saa7110_s_stream,
+./i2c/tc358743.c:	.s_stream = tc358743_s_stream,
+./i2c/imx290.c:	.s_stream = imx290_set_stream,
+./i2c/imx334.c:	.s_stream = imx334_set_stream,
+./i2c/imx319.c:	.s_stream = imx319_set_stream,
+./i2c/saa7127.c:	.s_stream = saa7127_s_stream,
+./i2c/ov5695.c:	.s_stream = ov5695_s_stream,
+./i2c/ov5647.c:	.s_stream =		ov5647_s_stream,
+./i2c/ov9282.c:	.s_stream = ov9282_set_stream,
+./i2c/ov2685.c:	.s_stream = ov2685_s_stream,
+./i2c/imx214.c:	.s_stream = imx214_s_stream,
+./i2c/imx355.c:	.s_stream = imx355_set_stream,
+./i2c/ccs/ccs-core.c:	.s_stream = ccs_set_stream,
+./i2c/ov9734.c:	.s_stream = ov9734_set_stream,
+./i2c/tvp5150.c:	.s_stream = tvp5150_s_stream,
+./i2c/mt9m032.c:	.s_stream = mt9m032_s_stream,
+./i2c/vs6624.c:	.s_stream = vs6624_s_stream,
+./i2c/ov02a10.c:	.s_stream = ov02a10_s_stream,
+./i2c/hi556.c:	.s_stream = hi556_set_stream,
+./i2c/vpx3220.c:	.s_stream = vpx3220_s_stream,
+./i2c/mt9t001.c:	.s_stream = mt9t001_s_stream,
+./i2c/ov8856.c:	.s_stream = ov8856_set_stream,
+./i2c/et8ek8/et8ek8_driver.c:	.s_stream = et8ek8_s_stream,
+./i2c/cx25840/cx25840-core.c:	.s_stream = cx25840_s_audio_stream,
+./i2c/cx25840/cx25840-core.c:	.s_stream = cx25840_s_stream,
+./i2c/ov13858.c:	.s_stream = ov13858_set_stream,
+./i2c/ap1302.c:	.s_stream = ap1302_s_stream,
+./i2c/ov2740.c:	.s_stream = ov2740_set_stream,
+./i2c/saa7115.c:	.s_stream = saa711x_s_stream,
+./i2c/s5k4ecgx.c:	.s_stream = s5k4ecgx_s_stream,
+./i2c/ov5675.c:	.s_stream = ov5675_set_stream,
+./i2c/imx274.c:	.s_stream = imx274_s_stream,
+./i2c/imx412.c:	.s_stream = imx412_set_stream,
+./i2c/ths8200.c:	.s_stream = ths8200_s_stream,
+./i2c/adv7180.c:	.s_stream = adv7180_s_stream,
+./i2c/st-mipid02.c:	.s_stream = mipid02_s_stream,
+./i2c/ov7251.c:	.s_stream = ov7251_s_stream,
+./i2c/imx208.c:	.s_stream = imx208_set_stream,
+./i2c/adv7183.c:	.s_stream = adv7183_s_stream,
+./i2c/adv748x/adv748x-afe.c:	.s_stream = adv748x_afe_s_stream,
+./i2c/adv748x/adv748x-hdmi.c:	.s_stream = adv748x_hdmi_s_stream,
+./i2c/adv748x/adv748x-csi2.c:	.s_stream = adv748x_csi2_s_stream,
+./i2c/ov2640.c:	.s_stream = ov2640_s_stream,
+./i2c/ad9389b.c:	.s_stream = ad9389b_s_stream,
+./i2c/ad9389b.c:	.s_stream = ad9389b_s_audio_stream,
+./i2c/ov9650.c:	.s_stream = ov965x_s_stream,
+./spi/gs1662.c:	.s_stream = gs_s_stream,
+./platform/rcar-vin/rcar-csi2.c:	.s_stream = rcsi2_s_stream,
+./platform/xilinx/xilinx-gamma.c:	.s_stream = xg_s_stream,
+./platform/xilinx/xilinx-hls.c:	.s_stream = xhls_s_stream,
+./platform/xilinx/xilinx-vpss-csc.c:	.s_stream = xcsc_s_stream,
+./platform/xilinx/xilinx-switch.c:	.s_stream = xsw_s_stream,
+./platform/xilinx/xilinx-axis-broadcaster.c:	.s_stream = xvbr_s_stream,
+./platform/xilinx/xilinx-rgb2yuv.c:	.s_stream = xrgb2yuv_s_stream,
+./platform/xilinx/xilinx-sdirxss.c:		xsdirxss->s_stream = true;
+./platform/xilinx/xilinx-sdirxss.c:		xsdirxss->s_stream = false;
+./platform/xilinx/xilinx-sdirxss.c:	.s_stream = xsdirxss_s_stream,
+./platform/xilinx/xilinx-sdirxss.c:	xsdirxss->s_stream = false;
+./platform/xilinx/xilinx-vpss-scaler.c:	.s_stream = xscaler_s_stream,
+./platform/xilinx/xilinx-demosaic.c:	.s_stream = xdmsc_s_stream,
+./platform/xilinx/xilinx-scenechange-channel.c:	.s_stream = xscd_s_stream,
+./platform/xilinx/xilinx-cfa.c:	.s_stream = xcfa_s_stream,
+./platform/xilinx/xilinx-axis-switch.c:	.s_stream = xvsw_s_stream,
+./platform/xilinx/xilinx-cresample.c:	.s_stream = xcresample_s_stream,
+./platform/xilinx/xilinx-tpg.c:	.s_stream = xtpg_s_stream,
+./platform/xilinx/xilinx-scaler.c:	.s_stream = xscaler_s_stream,
+./platform/xilinx/xilinx-csi2rxss.c:	.s_stream = xcsi2rxss_s_stream
+./platform/exynos4-is/fimc-isp.c:	.s_stream = fimc_isp_subdev_s_stream,
+./platform/exynos4-is/mipi-csis.c:	.s_stream = s5pcsis_s_stream,
+./platform/exynos4-is/fimc-lite.c:	.s_stream = fimc_lite_subdev_s_stream,
+./platform/qcom/camss/camss-ispif.c:	.s_stream = ispif_set_stream,
+./platform/qcom/camss/camss-csiphy.c:	.s_stream = csiphy_set_stream,
+./platform/qcom/camss/camss-vfe.c:	.s_stream = vfe_set_stream,
+./platform/qcom/camss/camss-csid.c:	.s_stream = csid_set_stream,
+./platform/video-mux.c:	.s_stream = video_mux_s_stream,
+./platform/ti-vpe/cal-camerarx.c:	.s_stream = cal_camerarx_sd_s_stream,
+./platform/omap3isp/ispccp2.c:	.s_stream = ccp2_s_stream,
+./platform/omap3isp/isphist.c:	.s_stream = omap3isp_stat_s_stream,
+./platform/omap3isp/isph3a_aewb.c:	.s_stream = omap3isp_stat_s_stream,
+./platform/omap3isp/ispcsi2.c:	.s_stream = csi2_set_stream,
+./platform/omap3isp/ispresizer.c:	.s_stream = resizer_set_stream,
+./platform/omap3isp/isph3a_af.c:	.s_stream = omap3isp_stat_s_stream,
+./platform/omap3isp/isppreview.c:	.s_stream = preview_set_stream,
+./platform/omap3isp/ispccdc.c:	.s_stream = ccdc_set_stream,
+./platform/rockchip/rkisp1/rkisp1-resizer.c:	.s_stream = rkisp1_rsz_s_stream,
+./platform/rockchip/rkisp1/rkisp1-isp.c:	.s_stream = rkisp1_isp_s_stream,
+./platform/vsp1/vsp1_wpf.c:	.s_stream = wpf_s_stream,
+./test-drivers/vimc/vimc-sensor.c:	.s_stream = vimc_sen_s_stream,
+./test-drivers/vimc/vimc-scaler.c:	.s_stream = vimc_sca_s_stream,
+./test-drivers/vimc/vimc-debayer.c:	.s_stream = vimc_deb_s_stream,
+./pci/cx18/cx18-av-core.c:	.s_stream = cx18_av_s_stream,
+./dvb-frontends/au8522_decoder.c:	.s_stream = au8522_s_stream,
+
+grep -R "entity.function"
+
+xvip_graph_entity_start_stop()
+调用栈：
+xdmsc_s_stream
+  xvip_graph_entity_start_stop
+    xvip_graph_pipeline_start_stop
+      xvip_dma_start_streaming
+        vb2_start_streaming
+          vb2_core_streamon
+            VIDIOC_STREAMON
+```
+
+
+
+```
+root@petalinux:~# ls -l /sys/class/video4linux/v4l-subdev*/device/driver                                                                                                                                           
+lrwxrwxrwx 1 root root 0 Nov 19 18:20 /sys/class/video4linux/v4l-subdev0/device/driver -> ../../../../../../bus/i2c/drivers/IMX274
+lrwxrwxrwx 1 root root 0 Nov 19 18:19 /sys/class/video4linux/v4l-subdev1/device/driver -> ../../../../bus/platform/drivers/xilinx-csi2rxss
+lrwxrwxrwx 1 root root 0 Nov 19 18:19 /sys/class/video4linux/v4l-subdev2/device/driver -> ../../../../bus/platform/drivers/xilinx-demosaic
+lrwxrwxrwx 1 root root 0 Nov 19 18:20 /sys/class/video4linux/v4l-subdev3/device/driver -> ../../../../bus/platform/drivers/xilinx-gamma-lut
+lrwxrwxrwx 1 root root 0 Nov 19 18:20 /sys/class/video4linux/v4l-subdev4/device/driver -> ../../../../bus/platform/drivers/xilinx-vpss-csc
+lrwxrwxrwx 1 root root 0 Nov 19 18:20 /sys/class/video4linux/v4l-subdev5/device/driver -> ../../../../bus/platform/drivers/xilinx-vpss-scaler
+lrwxrwxrwx 1 root root 0 Nov 19 18:20 /sys/class/video4linux/v4l-subdev6/device/driver -> ../../../../bus/platform/drivers/xilinx-tpg
+```
+
+
+
+在`xcsi2rxss_s_stream()@xilinx-csi2rxss.c` 添加
+
+```
+    dev_info(xcsi2rxss->dev, "%s@%s : Stream %s", __func__,__FILE__,
+		enable ? "On" : "Off");
+```
+
+在`xdmsc_s_stream()@xilinx-demosaic.c`添加
+
+```
+    dev_info(xdmsc->xvip.dev, "%s@%s : Stream %s", __func__,__FILE__,
+		enable ? "On" : "Off");
+```
+
+以次类推, `xilinx-gamma.c`,`xilinx-vpss-csc.c`,`xilinx-vpss-scaler.c`
+
+
+
+运行结果
+
+```
+root@petalinux:~# media-ctl -d /dev/media0 -V "\"imx678 0-001a\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+0_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -Unable to setup formats: Invalid argument (22)
+V "\"a0070000.mipi_csi2_rx_subsystem\":1 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":0 [fmt:VYYUYY8_1X24/38root@petalinux:~# media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+root@petalinux:~# media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":1 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+root@petalinux:~# media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+root@petalinux:~# media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+root@petalinux:~# media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+root@petalinux:~# media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+[  368.489331] xilinx-vpss-csc a0100000.v_proc_ss: VPSS CSC color controls reset to defaults
+root@petalinux:~# media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+[  368.521399] xilinx-vpss-csc a0100000.v_proc_ss: VPSS CSC color controls reset to defaults
+root@petalinux:~# media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+[  368.553324] xilinx-vpss-csc a0100000.v_proc_ss: VPSS CSC color controls reset to defaults
+root@petalinux:~# media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":0 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+root@petalinux:~# media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+root@petalinux:~# media-ctl -p -d /dev/media0
+Media controller API version 5.15.36
+
+Media device information
+------------------------
+driver          xilinx-video
+model           Xilinx Video Composite Device
+serial          
+bus info        
+hw revision     0x0
+driver version  5.15.36
+
+Device topology
+- entity 1: vcap_mipi_csi2_rx_v_proc_ss_sca (1 pad, 1 link)
+            type Node subtype V4L flags 0
+            device node name /dev/video0
+        pad0: Sink
+                <- "a00c0000.v_proc_ss":1 [ENABLED]
+
+- entity 5: IMX274 0-001a (1 pad, 1 link)
+            type V4L2 subdev subtype Sensor flags 0
+            device node name /dev/v4l-subdev0
+        pad0: Source
+                [fmt:SRGGB10_1X10/3840x2160@1/60 field:none colorspace:srgb
+                 crop.bounds:(0,0)/3840x2160
+                 crop:(0,0)/3840x2160
+                 compose.bounds:(0,0)/3840x2160
+                 compose:(0,0)/3840x2160]
+                -> "a0070000.mipi_csi2_rx_subsystem":0 [ENABLED]
+
+- entity 7: a0070000.mipi_csi2_rx_subsystem (2 pads, 2 links)
+            type V4L2 subdev subtype Unknown flags 0
+            device node name /dev/v4l-subdev1
+        pad0: Sink
+                [fmt:SRGGB10_1X10/3840x2160 field:none]
+                <- "IMX274 0-001a":0 [ENABLED]
+        pad1: Source
+                [fmt:SRGGB10_1X10/3840x2160 field:none]
+                -> "a0080000.v_demosaic":0 [ENABLED]
+
+- entity 10: a0080000.v_demosaic (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev2
+        pad0: Sink
+                [fmt:SRGGB10_1X10/3840x2160 field:none]
+                <- "a0070000.mipi_csi2_rx_subsystem":1 [ENABLED]
+        pad1: Source
+                [fmt:RBG888_1X24/3840x2160 field:none]
+                -> "a00a0000.v_gamma_lut":0 [ENABLED]
+
+- entity 13: a00a0000.v_gamma_lut (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev3
+        pad0: Sink
+                [fmt:RBG888_1X24/3840x2160 field:none]
+                <- "a0080000.v_demosaic":1 [ENABLED]
+        pad1: Source
+                [fmt:RBG888_1X24/3840x2160 field:none]
+                -> "a0100000.v_proc_ss":0 [ENABLED]
+
+- entity 16: a0100000.v_proc_ss (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev4
+        pad0: Sink
+                [fmt:RBG888_1X24/3840x2160 field:none]
+                <- "a00a0000.v_gamma_lut":1 [ENABLED]
+        pad1: Source
+                [fmt:VYYUYY8_1X24/3840x2160 field:none]
+                -> "a00c0000.v_proc_ss":0 [ENABLED]
+
+- entity 19: a00c0000.v_proc_ss (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev5
+        pad0: Sink
+                [fmt:VYYUYY8_1X24/3840x2160 field:none]
+                <- "a0100000.v_proc_ss":1 [ENABLED]
+        pad1: Source
+                [fmt:VYYUYY8_1X24/3840x2160 field:none]
+                -> "vcap_mipi_csi2_rx_v_proc_ss_sca":0 [ENABLED]
+
+root@petalinux:~# v4l2-ctl -d /dev/video0 --stream-mmap --verbose
+VIDIOC_QUERYCAP: ok
+                VIDIOC_REQBUFS returned 0 (Success)
+                VIDIOC_QUERYBUF returned 0 (S[  391.385918] xilinx-vpss-scaler a00c0000.v_proc_ss: xscaler_s_stream@drivers/media/platform/xilinx/xilinx-vpss-scaler.c: Stream On
+uccess)
+                VIDIOC_QUERYBUF returned 0 (Success)
+                VIDIOC_QUERYB[  391.404194] xilinx-vpss-csc a0100000.v_proc_ss: xcsc_s_stream@drivers/media/platform/xilinx/xilinx-vpss-csc.c : Stream On
+UF returned 0 (Success)
+[  391.419607] xilinx-gamma-lut a00a0000.v_gamma_lut: xg_s_stream@drivers/media/platform/xilinx/xilinx-gamma.c : Stream On
+
+                VIDIOC_QBUF returned 0 (Success)
+                VIDIOC_QBUF returned 0 (S[  391.436052] xilinx-demosaic a0080000.v_demosaic: xdmsc_s_stream@drivers/media/platform/xilinx/xilinx-demosaic.c : Stream On
+uccess)
+                VIDIOC_QBUF returned 0 (Success)
+                VIDIOC_QBUF returned 0 (Success)
+[  412.432748] rcu: INFO: rcu_sched detected stalls on CPUs/tasks:
+[  412.438658] rcu:     1-...!: (4 ticks this GP) idle=7cf/1/0x4000000000000000 softirq=5455/5455 fqs=7 
+[  412.447614]  (detected by 3, t=5263 jiffies, g=6221, q=82)
+[  412.453091] Task dump for CPU 1:
+[  412.456302] task:v4l2-ctl        state:R  running task     stack:    0 pid:  989 ppid:   918 flags:0x00000202
+[  412.466206] Call trace:
+[  412.468636]  __switch_to+0x10c/0x18c
+[  412.472204]  exit_el1_irq_or_nmi.isra.0+0x10/0x20
+[  412.476899]  el1_interrupt+0x3c/0x50
+[  412.480467]  el1h_64_irq_handler+0x18/0x24
+[  412.484555]  el1h_64_irq+0x78/0x7c
+[  412.487949]  console_unlock+0x2ec/0x460
+[  412.491777]  vprintk_emit+0xf8/0x240
+[  412.495344]  dev_vprintk_emit+0x138/0x170
+[  412.499346]  dev_printk_emit+0x58/0x80
+[  412.503087]  __dev_printk+0x4c/0x68
+[  412.506567]  _dev_info+0x60/0x88
+[  412.509788]  xdmsc_s_stream+0x50/0xd0
+[  412.513442]  xvip_graph_entity_start_stop+0x338/0x3e0
+[  412.518485]  xvip_graph_pipeline_start_stop+0x6c/0xb0
+[  412.523528]  xvip_dma_start_streaming+0x2fc/0x370
+[  412.528224]  vb2_start_streaming+0x9c/0x190
+[  412.532399]  vb2_core_streamon+0x90/0x190
+[  412.536401]  vb2_ioctl_streamon+0x5c/0xb0
+[  412.540402]  v4l_streamon+0x28/0x34
+[  412.543883]  __video_do_ioctl+0x17c/0x3e0
+[  412.547884]  video_usercopy+0x368/0x720
+[  412.551712]  video_ioctl2+0x18/0x30
+[  412.555193]  v4l2_ioctl+0x44/0x64
+[  412.558500]  __arm64_sys_ioctl+0xb8/0xe0
+[  412.562415]  invoke_syscall+0x54/0x124
+[  412.566156]  el0_svc_common.constprop.0+0xd4/0xfc
+[  412.570852]  do_el0_svc+0x48/0xb0
+[  412.574159]  el0_svc+0x28/0x80
+[  412.577205]  el0t_64_sync_handler+0xa4/0x130
+[  412.581467]  el0t_64_sync+0x1a0/0x1a4
+[  412.585122] rcu: rcu_sched kthread timer wakeup didn't happen for 5246 jiffies! g6221 f0x0 RCU_GP_WAIT_FQS(5) ->state=0x402
+[  412.596240] rcu:     Possible timer handling issue on cpu=2 timer-softirq=5047
+[  412.603185] rcu: rcu_sched kthread starved for 5247 jiffies! g6221 f0x0 RCU_GP_WAIT_FQS(5) ->state=0x402 ->cpu=2
+[  412.613349] rcu:     Unless rcu_sched kthread gets sufficient CPU time, OOM is now expected behavior.
+[  412.622289] rcu: RCU grace-period kthread stack dump:
+[  412.627324] task:rcu_sched       state:I stack:    0 pid:   11 ppid:     2 flags:0x00000008
+[  412.635665] Call trace:
+[  412.638095]  __switch_to+0x10c/0x18c
+[  412.641663]  __schedule+0x320/0x720
+[  412.645144]  schedule+0x48/0xd0
+[  412.648277]  schedule_timeout+0x80/0xf0
+[  412.652105]  rcu_gp_fqs_loop+0xf0/0x2b4
+[  412.655933]  rcu_gp_kthread+0xe8/0x100
+[  412.659674]  kthread+0x120/0x130
+[  412.662894]  ret_from_fork+0x10/0x20
+[  412.666462] rcu: Stack dump where RCU GP kthread last ran:
+[  412.671930] Task dump for CPU 2:
+[  412.675142] task:swapper/2       state:R  running task     stack:    0 pid:    0 ppid:     1 flags:0x00000008
+[  412.685046] Call trace:
+[  412.687476]  __switch_to+0x10c/0x18c
+[  412.691043]  __schedule+0x320/0x720
+[  412.694524]  schedule_idle+0x28/0x50
+[  412.698092]  do_idle+0x138/0x15c
+[  412.701312]  cpu_startup_entry+0x28/0x60
+[  412.705226]  secondary_start_kernel+0x13c/0x150
+[  412.709749]  __secondary_switched+0x94/0x98
+
+```
+
+```
+root@petalinux:~# gst-launch-1.0 v4l2src device=/dev/video0 '!' video/x-raw, format=NV12, width=3840, height=2160, framerate=60/1 '!' queue '!' kmssink bus-id=a0060000.v_mix fullscreen-overlay=1
+Setting pipeline to PAUSED ...
+Pipeline is live and does not need PREROLL ...
+Pipeline is PREROLLED ...
+Setting pipeline to PLAYING ...
+New clock: GstSystemClock
+[  320.538400] xilinx-vpss-scaler a00c0000.v_proc_ss: xscaler_s_stream@drivers/media/platform/xilinx/xilinx-vpss-scaler.c: Stream On
+[  320.551169] xilinx-vpss-csc a0100000.v_proc_ss: xcsc_s_stream@drivers/media/platform/xilinx/xilinx-vpss-csc.c : Stream On
+[  320.562141] xilinx-gamma-lut a00a0000.v_gamma_lut: xg_s_stream@drivers/media/platform/xilinx/xilinx-gamma.c : Stream On
+[  320.573062] xilinx-demosaic a0080000.v_demosaic: xdmsc_s_stream@drivers/media/platform/xilinx/xilinx-demosaic.c : Stream On
+
+```
+
+逐步排查, 到`xdmsc_write()`调用造成系统挂掉
+
+`xvip->iomem` 看起来不是固定的, 是虚拟内存地址? 
+
+```
+[  210.076998] xilinx-gamma-lut a00a0000.v_gamma_lut: Writing 0xf100f0 to reg offset 0x19e0, base=0x0b1c0000, *base=0x00000004
+[  210.088126] xilinx-gamma-lut a00a0000.v_gamma_lut: Writing 0xf300f2 to reg offset 0x19e4, base=0x0b1c0000, *base=0x00000004
+[  210.099254] xilinx-gamma-lut a00a0000.v_gamma_lut: Writing 0xf500f4 to reg offset 0x19e8, base=0x0b1c0000, *base=0x00000004
+[  210.110385] xilinx-gamma-lut a00a0000.v_gamma_lut: Writing 0xf700f6 to reg offset 0x19ec, base=0x0b1c0000, *base=0x00000004
+[  210.121518] xilinx-gamma-lut a00a0000.v_gamma_lut: Writing 0xf900f8 to reg offset 0x19f0, base=0x0b1c0000, *base=0x00000004
+[  210.132646] xilinx-gamma-lut a00a0000.v_gamma_lut: Writing 0xfb00fa to reg offset 0x19f4, base=0x0b1c0000, *base=0x00000004
+[  210.143774] xilinx-gamma-lut a00a0000.v_gamma_lut: Writing 0xfd00fc to reg offset 0x19f8, base=0x0b1c0000, *base=0x00000004
+[  210.154901] xilinx-gamma-lut a00a0000.v_gamma_lut: Writing 0xff00fe to reg offset 0x19fc, base=0x0b1c0000, *base=0x00000004
+[  210.166029] xilinx-gamma-lut a00a0000.v_gamma_lut: Writing 0x81 to reg offset 0x0, base=0x0b1c0000, *base=0x00000004
+[  210.176549] xilinx-gamma-lut a00a0000.v_gamma_lut: xg_s_stream@drivers/media/platform/xilinx/xilinx-gamma.c : after Start GAMMA
+[  210.188028] xilinx-demosaic a0080000.v_demosaic: xdmsc_s_stream@drivers/media/platform/xilinx/xilinx-demosaic.c : Stream On
+[  210.199151] xilinx-demosaic a0080000.v_demosaic: xdmsc_s_stream@drivers/media/platform/xilinx/xilinx-demosaic.c : width = 1920, height= 1080, bayer_fmt = 0
+[  210.213056] xilinx-demosaic a0080000.v_demosaic: calling xvip_write(), offset=0x00000010, base_addr=0x0b160000, data=0x00000780
+
+```
+
+
+
+是的, `xvip->iomem`是 **ioremap 后的内核虚拟地址**
+
+如果`reset-gpios`状态不对, 也可能访问地址的时候挂掉.
+
+看`dts`里面`demosaic`的`reset-gpios = <&rest_gpio 3 0 1>;` 和 其他`ip`的比如`reset-gpios = <&rest_gpio 7 1>;`这样的稍有不同,  修改了再试试看.
+
+
+
+##### 排查`DTS`里面`demosaic`的`reset-gpios`
+
+`system-user.dtsi`添加
+
+```
+&mipi_csi2_rx_v_demosaic_0 {
+    reset-gpios = <&rest_gpio 3 1>;
+};
+```
+
+
+
+```
+#查看内存映射
+root@petalinux:~# cat /proc/iomem | grep demosaic
+a0080000-a008ffff : a0080000.v_demosaic v_demosaic@a0080000
+
+
+#设置graph
+media-ctl -p -d /dev/media0
+media-ctl -d /dev/media0 -V "\"IMX274 0-001a\":0  [fmt:SRGGB8_1X8/1920x1080 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":0  [fmt:SRGGB8_1X8/1920x1080 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":1  [fmt:SRGGB8_1X8/1920x1080 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":0  [fmt:SRGGB8_1X8/1920x1080 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":1  [fmt:RBG888_1X24/1920x1080 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":0  [fmt:RBG888_1X24/1920x1080 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":1  [fmt:RBG888_1X24/1920x1080 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":0  [fmt:RBG888_1X24/1920x1080 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":1  [fmt:RBG888_1X24/1920x1080 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":0  [fmt:RBG888_1X24/1920x1080 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":1  [fmt:VYYUYY8_1X24/1920x1080 field:none]"
+media-ctl -p -d /dev/media0
+
+#执行
+v4l2-ctl -d /dev/video0 --set-fmt-video=width=1920,height=1080,pixelformat=NV12
+v4l2-ctl -d /dev/video0 --stream-mmap --stream-count=1
+
+
+
+
+```
+
+
+
+##### 结果: `stream on` 流程正常了
+
+哈哈, 这次`csi2rxss`有了
+
+```
+[  521.248120] xilinx-gamma-lut a00a0000.v_gamma_lut: Writing 0xf900f8 to reg offset 0x19f0, base=0x0b120000, *base=0x00000004
+[  521.259249] xilinx-gamma-lut a00a0000.v_gamma_lut: Writing 0xfb00fa to reg offset 0x19f4, base=0x0b120000, *base=0x00000004
+[  521.270375] xilinx-gamma-lut a00a0000.v_gamma_lut: Writing 0xfd00fc to reg offset 0x19f8, base=0x0b120000, *base=0x00000004
+[  521.281503] xilinx-gamma-lut a00a0000.v_gamma_lut: Writing 0xff00fe to reg offset 0x19fc, base=0x0b120000, *base=0x00000004
+[  521.292631] xilinx-gamma-lut a00a0000.v_gamma_lut: Writing 0x81 to reg offset 0x0, base=0x0b120000, *base=0x00000004
+[  521.303150] xilinx-gamma-lut a00a0000.v_gamma_lut: xg_s_stream@drivers/media/platform/xilinx/xilinx-gamma.c : after Start GAMMA
+[  521.314632] xilinx-demosaic a0080000.v_demosaic: xdmsc_s_stream@drivers/media/platform/xilinx/xilinx-demosaic.c : Stream On
+[  521.325763] xilinx-demosaic a0080000.v_demosaic: xdmsc_s_stream@drivers/media/platform/xilinx/xilinx-demosaic.c : width = 1920, height= 1080, bayer_fmt = 0
+[  521.339672] xilinx-demosaic a0080000.v_demosaic: calling xvip_write(), offset=0x00000010, base_addr=0x0b100000, data=0x00000780
+[  521.351153] xilinx-demosaic a0080000.v_demosaic: xdmsc->xvip.iomem=0x0b100000, *base=0x00000004
+[  521.359849] xilinx-demosaic a0080000.v_demosaic: Writing 0x780 to reg offset 0x10
+[  521.367332] xilinx-demosaic a0080000.v_demosaic: calling xvip_write(), offset=0x00000018, base_addr=0x0b100000, data=0x00000438
+[  521.378805] xilinx-demosaic a0080000.v_demosaic: xdmsc->xvip.iomem=0x0b100000, *base=0x00000004
+[  521.387502] xilinx-demosaic a0080000.v_demosaic: Writing 0x438 to reg offset 0x18
+[  521.394985] xilinx-demosaic a0080000.v_demosaic: calling xvip_write(), offset=0x00000028, base_addr=0x0b100000, data=0x00000000
+[  521.406461] xilinx-demosaic a0080000.v_demosaic: xdmsc->xvip.iomem=0x0b100000, *base=0x00000004
+[  521.415157] xilinx-demosaic a0080000.v_demosaic: Writing 0x0 to reg offset 0x28
+[  521.422467] xilinx-demosaic a0080000.v_demosaic: xdmsc_s_stream@drivers/media/platform/xilinx/xilinx-demosaic.c : before start Demosaic
+[  521.434636] xilinx-demosaic a0080000.v_demosaic: calling xvip_write(), offset=0x00000000, base_addr=0x0b100000, data=0x00000081
+[  521.446111] xilinx-demosaic a0080000.v_demosaic: xdmsc->xvip.iomem=0x0b100000, *base=0x00000004
+[  521.454807] xilinx-demosaic a0080000.v_demosaic: Writing 0x81 to reg offset 0x0
+[  521.462117] xilinx-demosaic a0080000.v_demosaic: xdmsc_s_stream@drivers/media/platform/xilinx/xilinx-demosaic.c : after start Demosaic
+[  521.474206] xilinx-csi2rxss a0070000.mipi_csi2_rx_subsystem: xcsi2rxss_s_stream@drivers/media/platform/xilinx/xilinx-csi2rxss.c : Stream On
+
+^C[  536.108921] xilinx-csi2rxss a0070000.mipi_csi2_rx_subsystem: xcsi2rxss_s_stream@drivers/media/platform/xilinx/xilinx-csi2rxss.c : Stream Off
+[  536.122041] xilinx-demosaic a0080000.v_demosaic: xdmsc_s_stream@drivers/media/platform/xilinx/xilinx-demosaic.c : Stream Off
+[  536.133267] xilinx-gamma-lut a00a0000.v_gamma_lut: xg_s_stream@drivers/media/platform/xilinx/xilinx-gamma.c : Stream Off
+[  536.144148] xilinx-vpss-csc a0100000.v_proc_ss: xcsc_s_stream@drivers/media/platform/xilinx/xilinx-vpss-csc.c : Stream Off
+[  536.155197] xilinx-vpss-scaler a00c0000.v_proc_ss: xscaler_s_stream@drivers/media/platform/xilinx/xilinx-vpss-scaler.c: Stream On
+
+```
+
+看看总线波形, 发出了`imx274`的序列
+
+#### `DTS`里更换摄像头更换为`IMX678`
+
+```
+media-ctl -d /dev/media0 -V "\"imx678 0-001a\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":1 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":0 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -p -d /dev/media0
+v4l2-ctl -d /dev/video0 --set-fmt-video=width=3840,height=2160,pixelformat=NV12
+v4l2-ctl -d /dev/video0 --stream-mmap --stream-count=1
+v4l2-ctl -d /dev/video0 --stream-mmap --stream-count=10
+gst-launch-1.0 v4l2src device=/dev/video0 '!' video/x-raw, width=3840, height=2160, framerate=60/1 '!' queue '!' kmssink bus-id=a0060000.v_mix fullscreen-overlay=1
+gst-launch-1.0 v4l2src device=/dev/video0 '!' video/x-raw, format=NV12, width=3840, height=2160, framerate=60/1 '!' queue '!' kmssink bus-id=a0060000.v_mix fullscreen-overlay=1
+```
+
+`poweron`有, 初始化序列有. 摄像头的图像能显示
+
+
+
+
+
+#### `VBO`方式连接摄像头
+
+参考
+
+<https://github.com/veyeimaging/nvidia_jetson_veye_bsp/blob/dc89d6febf960a43c1b9cfa9a00aac5fe36b9592/drivers_source/cam_drv_src/veye%2Cvbyone.txt>
+
+<https://github.com/veyeimaging/rk35xx_veye_bsp/blob/6328698ad01738baf592d06f42532045c714a383/linux/drivers/kernel_v5.10/veye%2Cvbyone.txt#L2>
+
+<https://github.com/realsenseai/realsense_mipi_platform_driver/blob/master/hardware/realsense/tegra194-camera-d4xx.dtsi>
+
+<https://github.com/atmark-techno/linux-5.10-at/tree/33433174975c6c64a69edd29255416f1ad325f0d/drivers/media/i2c>
+
+<https://github.com/atmark-techno/linux-5.10-at/commit/33433174975c6c64a69edd29255416f1ad325f0d#diff-1bdf0287089c8dff1b0e5b54f1121c4f8ed5477a86d1dd32a0c460149018a4ed>
+
+<https://github.com/TexasInstruments/ti-linux-kernel/blob/da3c0f0a33ac00f7138c695a16d90301cf7ec02b/arch/arm64/boot/dts/ti/k3-j721e-evm-ub954.dtso#L4>
+
+<https://github.com/TexasInstruments/ti-linux-kernel/blob/da3c0f0a33ac00f7138c695a16d90301cf7ec02b/Documentation/devicetree/bindings/media/i2c/ti%2Cds90ub960.yaml>
+
+<https://github.com/TexasInstruments/ti-linux-kernel/blob/da3c0f0a33ac00f7138c695a16d90301cf7ec02b/Documentation/devicetree/bindings/media/i2c/thine%2Cthp7312.yaml>
+
+
+
+<https://linux.googlesource.com/linux/kernel/git/torvalds/linux/+/refs/heads/master/drivers/media/i2c/max96714.c>
+
+<https://linux.googlesource.com/linux/kernel/git/torvalds/linux/+/refs/heads/master/drivers/media/i2c/max96717.c>
+
+<https://linux.googlesource.com/linux/kernel/git/torvalds/linux/+/refs/heads/master/Documentation/devicetree/bindings/media/i2c/maxim%2Cmax96714.yaml>
+
+<https://linux.googlesource.com/linux/kernel/git/torvalds/linux/+/refs/heads/master/Documentation/devicetree/bindings/media/i2c/maxim%2Cmax96717.yaml>
+
+
+
+实现思路
+
+1. 借鉴`max96714-max96717`, 实质上是`I2C_MUX`方式保证先初始化`serdes`再`probe`或配置摄像头.
+2. 利用 regulator / clock 依赖, 实际上摄像头的时钟也是由`serdes`提供, 这样摄像头 probe 会 **自动 defer** `serdes`.
+3. 特殊化摄像头头驱动, s_stream调用传到sensor直接再配置`vbo`
+
+思路2比较好实现, 修改`veye_vbyone`这个驱动就是.
+
+在`components/yocto/workspace/sources/linux-xlnx/drivers/media/i2c/Kconfig`的`Miscellaneous helper chips`菜单下添加(放在`endmenu`之前)
+
+```
+config VIDEO_VBYONE
+       tristate "VEYE V-by-One hs toolkit support."
+       depends on I2C && VIDEO_V4L2 && VIDEO_V4L2_SUBDEV_API
+       depends on MEDIA_CAMERA_SUPPORT
+       help
+               Driver for V-by-One hs toolkit .
+```
+
+在`components/yocto/workspace/sources/linux-xlnx/drivers/media/i2c/Makefile`的`st-mipid02.o`后面一行添加
+
+```
+obj-$(CONFIG_VIDEO_VBYONE) += thcv24xap.o
+```
+
+`thcv24xap.c`根据`veye_vbyone`修改
+
+确认内核选项开启了
+
+```
+zcat /proc/config.gz | grep -i vbyone
+```
+
+
+
+调试序列
+
+```
+i2ctransfer -f -y 0 w3@0x0B 0x00 0x50 0x36
+i2ctransfer -f -y 0 w3@0x0B 0x00 0x04 0x03
+i2ctransfer -f -y 0 w3@0x0B 0x00 0x10 0x33
+i2ctransfer -f -y 0 w3@0x0B 0x17 0x04 0x03
+i2ctransfer -f -y 0 w3@0x0B 0x01 0x02 0x0a
+i2ctransfer -f -y 0 w3@0x0B 0x01 0x03 0x0a
+i2ctransfer -f -y 0 w3@0x0B 0x01 0x04 0x0a
+i2ctransfer -f -y 0 w3@0x0B 0x01 0x05 0x0a
+i2ctransfer -f -y 0 w3@0x0B 0x01 0x00 0x03
+i2ctransfer -f -y 0 w3@0x0B 0x01 0x0F 0x25
+i2ctransfer -f -y 0 w3@0x0B 0x01 0x0A 0x15
+i2ctransfer -f -y 0 w3@0x0B 0x00 0x31 0x02
+i2ctransfer -f -y 0 w3@0x0B 0x00 0x32 0x10
+i2ctransfer -f -y 0 w3@0x0B 0x00 0xe4 0x01
+i2ctransfer -f -y 0 w3@0x36 0x00 0xF3 0x22
+i2ctransfer -f -y 0 w3@0x36 0x00 0xF2 0x22
+i2ctransfer -f -y 0 w3@0x36 0x00 0xF0 0x03
+i2ctransfer -f -y 0 w3@0x36 0x00 0xFF 0x19
+i2ctransfer -f -y 0 w3@0x36 0x00 0xF6 0x15
+i2ctransfer -f -y 0 w3@0x36 0x00 0xC9 0x05
+i2ctransfer -f -y 0 w3@0x36 0x00 0xCA 0x05
+i2ctransfer -f -y 0 w3@0x36 0x10 0x76 0x10
+i2ctransfer -f -y 0 w3@0x36 0x10 0x0F 0x01
+i2ctransfer -f -y 0 w3@0x36 0x10 0x0E 0xFE
+i2ctransfer -f -y 0 w3@0x36 0x10 0x11 0x2E
+i2ctransfer -f -y 0 w3@0x36 0x10 0x12 0xE0
+i2ctransfer -f -y 0 w3@0x36 0x10 0x13 0x00
+i2ctransfer -f -y 0 w3@0x36 0x10 0x14 0x00
+i2ctransfer -f -y 0 w3@0x36 0x10 0x15 0x62
+i2ctransfer -f -y 0 w3@0x36 0x10 0x16 0x01
+i2ctransfer -f -y 0 w3@0x36 0x10 0x00 0x01
+i2ctransfer -f -y 0 w3@0x36 0x10 0x01 0x00
+i2ctransfer -f -y 0 w3@0x36 0x10 0x02 0x00
+i2ctransfer -f -y 0 w3@0x36 0x10 0x55 0x00
+i2ctransfer -f -y 0 w3@0x36 0x10 0x04 0x00
+i2ctransfer -f -y 0 w3@0x36 0x10 0x2B 0x04
+i2ctransfer -f -y 0 w3@0x36 0x10 0x2F 0x00
+i2ctransfer -f -y 0 w3@0x36 0x10 0x2D 0x13
+i2ctransfer -f -y 0 w3@0x36 0x10 0x2C 0x01
+i2ctransfer -f -y 0 w3@0x36 0x10 0x05 0x01
+i2ctransfer -f -y 0 w3@0x36 0x10 0x06 0x01
+i2ctransfer -f -y 0 w3@0x36 0x10 0x27 0x00
+i2ctransfer -f -y 0 w3@0x36 0x10 0x1D 0x00
+i2ctransfer -f -y 0 w3@0x36 0x10 0x1E 0x00
+i2ctransfer -f -y 0 w3@0x36 0x10 0x3D 0x00
+i2ctransfer -f -y 0 w3@0x36 0x10 0x3E 0x10
+i2ctransfer -f -y 0 w3@0x36 0x10 0x3F 0x01
+i2ctransfer -f -y 0 w3@0x0B 0x00 0x32 0x10
+i2ctransfer -f -y 0 w3@0x0B 0x00 0x10 0x33
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x12 0x00
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x10 0xA1
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x11 0x06
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x14 0xA1
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x15 0x06
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x21 0x20
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x22 0x02
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x23 0x11
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x24 0x00
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x25 0x00
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x26 0x00
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x27 0x07
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x28 0x00
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x30 0x00
+i2ctransfer -f -y 0 w3@0x0B 0x11 0x00 0x01
+i2ctransfer -f -y 0 w3@0x0B 0x11 0x01 0x01
+i2ctransfer -f -y 0 w3@0x0B 0x11 0x02 0x01
+i2ctransfer -f -y 0 w3@0x0B 0x12 0x00 0x01
+i2ctransfer -f -y 0 w3@0x0B 0x12 0x01 0x01
+i2ctransfer -f -y 0 w3@0x0B 0x12 0x02 0x01
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x00 0x1a
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x05 0x2b
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x06 0x44
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x0d 0x10
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x18 0x10
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x0c 0x01
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x17 0x01
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x0b 0x0c
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x16 0x0c
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x09 0x08
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x14 0x08
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x0a 0x32
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x15 0x32
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x0e 0x10
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x19 0x10
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x10 0x0a
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x1b 0x0a
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x11 0x10
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x1c 0x10
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x12 0x0c
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x1d 0x0c
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x0f 0x0a
+i2ctransfer -f -y 0 w3@0x0B 0x16 0x1a 0x0a
+i2ctransfer -f -y 0 w3@0x0B 0x15 0x01 0x08
+i2ctransfer -f -y 0 w3@0x0B 0x17 0x03 0x01
+i2ctransfer -f -y 0 w3@0x0B 0x17 0x04 0x33
+i2ctransfer -f -y 0 w3@0x0B 0x17 0x00 0x03
+i2ctransfer -f -y 0 w3@0x0B 0x17 0x20 0xff
+i2ctransfer -f -y 0 w3@0x0B 0x17 0x25 0xff
+i2ctransfer -f -y 0 w3@0x0B 0x17 0x26 0xff
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x03 0x00
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x04 0x03
+i2ctransfer -f -y 0 w3@0x0B 0x00 0x1b 0x18
+i2ctransfer -f -y 0 w3@0x0B 0x00 0x32 0x10
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x05 0x22
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x06 0x22
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x0c 0x11
+i2ctransfer -f -y 0 w3@0x0B 0x10 0x0d 0x34
+i2ctransfer -f -y 0 w3@0x0B 0x00 0x40 0x1A
+i2ctransfer -f -y 0 w3@0x0B 0x00 0x41 0x1A
+```
+
+
+
+总结
+
+1. 目前板子上电`thcv24xap_probe`时会给`VBO serde`初始化配置序列, 摄像头在调用`s_stream`才上电和进行配置.
+
+实际上产品化应该做成`serdes`的配置序列也在调用`s_stream`才上电和进行配置. 也就是说后续要给摄像头驱动加东西, 或者仿照摄像头驱动做`vbo`的驱动
+
+2. `htcv241`在`2byte`模式下不能读, 写入是没问题的.
+3. `htcv241`的晶振配置影响极大, 务必确认清楚.
+
+
+
+
+
+
+
+
 
 
 
@@ -7758,4 +10810,224 @@ i2ctransfer -y -a 1 w4@0x7c 0x00 0x20 0x12 0x34     # 16-bit寄存器地址写2�
 
 
 ### `VCU`
+
+
+
+### `DMA`报错的处理
+
+```
+root@petalinux:~# dmesg | grep -i vcap
+[    0.277514] platform amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: Fixing up cyclic dependency with a00c0000.v_proc_ss
+[    0.286860] platform amba_pl@0:vcap_tpg_input_v_tpg_0: Fixing up cyclic dependency with a0140000.v_tpg
+[   11.007295] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: /amba_pl@0/vcap_mipi_csi2_rx_v_proc_ss_scaler/ports/port@0 initialization failed
+[   11.020297] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: DMA initialization failed
+[   11.029077] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: /amba_pl@0/vcap_tpg_input_v_tpg_0/ports/port@0 initialization failed
+[   11.040450] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: DMA initialization failed
+[   11.948497] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: device registered
+[   11.956910] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: device registered
+[   11.976889] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: Entity type for entity a0070000.mipi_csi2_rx_subsystem was not initialized!
+[   11.999639] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: Entity type for entity a0080000.v_demosaic was not initialized!
+[   12.017770] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: Entity type for entity a00a0000.v_gamma_lut was not initialized!
+[   12.053586] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: Entity type for entity a0100000.v_proc_ss was not initialized!
+[   12.090959] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: Entity type for entity a00c0000.v_proc_ss was not initialized!
+[   12.158498] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: Entity type for entity a0140000.v_tpg was not initialized!
+
+
+```
+
+
+
+可能在这些文件打印的`DMA initialization failed`
+
+```
+andy@andy-zirui:~/workdir/zirui/06_vcu_trd_port/tmp/test/petalinux/components/yocto/workspace/sources/linux-xlnx/drivers/media/platform/xilinx
+
+$ grep -R "initialization failed" .
+./xilinx-vipp.c:		dev_err(xdev->dev, "%pOF initialization failed\n", node);
+./xilinx-vipp.c:		dev_err(xdev->dev, "DMA initialization failed\n");
+./xilinx-m2m.c:		dev_err(xdev->dev, "DMA initialization failed\n");
+./xilinx-m2m.c:		dev_err(xdev->dev, "DMA initialization failed\n");
+
+$ grep -R "xlnx,video" .
+./xilinx-gamma.c:			rval = of_property_read_u32(port, "xlnx,video-width",
+./xilinx-vipp.c:	{ .compatible = "xlnx,video" },
+./xilinx-vpss-csc.c:			rval = of_property_read_u32(port, "xlnx,video-width",
+./xilinx-vpss-csc.c:					"DT Port%d xlnx,video-width not found",
+./xilinx-vip.c: * Read the xlnx,video-format, xlnx,video-width and xlnx,cfa-pattern properties
+./xilinx-vip.c:	ret = of_property_read_u32(node, "xlnx,video-format", &vf_code);
+./xilinx-vip.c:	ret = of_property_read_u32(node, "xlnx,video-width", &width);
+./xilinx-remapper.c:	ret = of_property_read_u32(node, "xlnx,video-width",
+./xilinx-remapper.c:			"xlnx,video-width");
+
+
+```
+
+`xilinx-vipp.c`
+
+```
+static int xvip_graph_init(struct xvip_composite_device *xdev)
+{
+	int ret;
+
+	/* Init the DMA channels. */
+	ret = xvip_graph_dma_init(xdev);
+	if (ret < 0) {
+		//dev_err(xdev->dev, "DMA initialization failed\n");
+		dev_err(xdev->dev, "%s-%s-%s, DMA initialization failed\n",__FILE__, __LINE__, __FUNCTION__);  // ++ by me
+		goto done;
+	}
+
+	/* Parse the graph to extract a list of subdevice DT nodes. */
+	ret = xvip_graph_parse(xdev);
+	if (ret < 0) {
+		dev_err(xdev->dev, "graph parsing failed\n");
+		goto done;
+	}
+
+	if (list_empty(&xdev->notifier.asd_list)) {
+		dev_err(xdev->dev, "no subdev found in graph\n");
+		ret = -ENOENT;
+		goto done;
+	}
+
+	/* Register the subdevices notifier. */
+	xdev->notifier.ops = &xvip_graph_notify_ops;
+
+	ret = v4l2_async_notifier_register(&xdev->v4l2_dev, &xdev->notifier);
+	if (ret < 0) {
+		dev_err(xdev->dev, "notifier registration failed\n");
+		goto done;
+	}
+
+	ret = 0;
+
+done:
+	if (ret < 0)
+		xvip_graph_cleanup(xdev);
+
+	return ret;
+}
+```
+
+修改一下打印, 编译一个试试
+
+```
+petalinux-build -c linux-xlnx -x cleansstate
+petalinux-build
+petalinux-package --boot --u-boot --fpga --force
+```
+
+这次板子上打印
+
+```
+root@petalinux:~# dmesg | grep -i vcap
+[    0.277513] platform amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: Fixing up cyclic dependency with a00c0000.v_proc_ss
+[    0.286861] platform amba_pl@0:vcap_tpg_input_v_tpg_0: Fixing up cyclic dependency with a0140000.v_tpg
+[   11.009447] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: /amba_pl@0/vcap_mipi_csi2_rx_v_proc_ss_scaler/ports/port@0 initialization failed
+[   11.022453] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: drivers/media/platform/xilinx/xilinx-vipp.c-(efault)-xvip_graph_init, DMA initialization failed
+[   11.037285] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: /amba_pl@0/vcap_tpg_input_v_tpg_0/ports/port@0 initialization failed
+[   11.048659] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: drivers/media/platform/xilinx/xilinx-vipp.c-(efault)-xvip_graph_init, DMA initialization failed
+[   11.964542] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: device registered
+[   11.973127] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: device registered
+[   11.985529] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: Entity type for entity a0070000.mipi_csi2_rx_subsystem was not initialized!
+[   12.006179] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: Entity type for entity a0080000.v_demosaic was not initialized!
+[   12.041695] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: Entity type for entity a00a0000.v_gamma_lut was not initialized!
+[   12.078880] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: Entity type for entity a0100000.v_proc_ss was not initialized!
+[   12.110368] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: Entity type for entity a00c0000.v_proc_ss was not initialized!
+[   12.187384] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: Entity type for entity a0140000.v_tpg was not initialized!
+
+```
+
+追踪到`xvip_graph_dma_init_one()`, 添加一些打印信息, 依次追踪下去
+
+-> `xvip_dma_init()`@`xilinx-dma.c` -> `dma_request_chan()`
+
+```
+root@petalinux:~# dmesg | grep -i xilinx-video
+[   11.009389] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: drivers/media/platform/xilinx/xilinx-vipp.c-xvip_graph_dma_init_one
+[   11.021306] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: drivers/media/platform/xilinx/xilinx-dma.c-xvip_dma_init
+[   11.032737] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: drivers/media/platform/xilinx/xilinx-dma.c-xvip_dma_init, port0
+[   11.044745] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: drivers/media/platform/xilinx/xilinx-dma.c-xvip_dma_init, dma_request_chan() failed, ret=-517
+[   11.059360] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: drivers/media/platform/xilinx/xilinx-dma.c-xvip_dma_init, ret != 0
+[   11.071641] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: drivers/media/platform/xilinx/xilinx-vipp.c-xvip_graph_dma_init_one, /amba_pl@0/vcap_mipi_csi2_rx_v_proc_ss_scaler/ports/port@0 initialid
+[   11.091103] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: xvip_graph_dma_init_one faild
+[   11.100186] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: drivers/media/platform/xilinx/xilinx-vipp.c-xvip_graph_init, DMA initialization failed
+[   11.114231] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: drivers/media/platform/xilinx/xilinx-vipp.c-xvip_graph_dma_init_one
+[   11.125538] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: drivers/media/platform/xilinx/xilinx-dma.c-xvip_dma_init
+[   11.135919] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: drivers/media/platform/xilinx/xilinx-dma.c-xvip_dma_init, port0
+[   11.146899] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: drivers/media/platform/xilinx/xilinx-dma.c-xvip_dma_init, dma_request_chan() failed, ret=-517
+[   11.160477] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: drivers/media/platform/xilinx/xilinx-dma.c-xvip_dma_init, ret != 0
+[   11.171721] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: drivers/media/platform/xilinx/xilinx-vipp.c-xvip_graph_dma_init_one, /amba_pl@0/vcap_tpg_input_v_tpg_0/ports/port@0 initialization failed
+[   11.189107] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: xvip_graph_dma_init_one faild
+[   11.197151] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: drivers/media/platform/xilinx/xilinx-vipp.c-xvip_graph_init, DMA initialization failed
+[   12.107768] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: drivers/media/platform/xilinx/xilinx-vipp.c-xvip_graph_dma_init_one
+[   12.120205] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: drivers/media/platform/xilinx/xilinx-dma.c-xvip_dma_init
+[   12.131705] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: drivers/media/platform/xilinx/xilinx-dma.c-xvip_dma_init, port0
+[   12.143907] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: /amba_pl@0/vcap_mipi_csi2_rx_v_proc_ss_scaler/ports/port@0 initializationed
+[   12.157130] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: device registered
+[   12.170772] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: drivers/media/platform/xilinx/xilinx-vipp.c-xvip_graph_dma_init_one
+[   12.189638] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: drivers/media/platform/xilinx/xilinx-dma.c-xvip_dma_init
+[   12.209456] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: drivers/media/platform/xilinx/xilinx-dma.c-xvip_dma_init, port0
+[   12.226620] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: /amba_pl@0/vcap_tpg_input_v_tpg_0/ports/port@0 initializationed
+[   12.245684] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: device registered
+[   12.260300] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: Entity type for entity a0070000.mipi_csi2_rx_subsystem was not initialized!
+[   12.278179] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: Entity type for entity a0080000.v_demosaic was not initialized!
+[   12.310029] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: Entity type for entity a00a0000.v_gamma_lut was not initialized!
+[   12.326177] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: Entity type for entity a0100000.v_proc_ss was not initialized!
+[   12.356401] xilinx-video amba_pl@0:vcap_mipi_csi2_rx_v_proc_ss_scaler: Entity type for entity a00c0000.v_proc_ss was not initialized!
+[   12.440743] xilinx-video amba_pl@0:vcap_tpg_input_v_tpg_0: Entity type for entity a0140000.v_tpg was not initialized!
+
+```
+
+```
+dma_request_chan() failed, ret = -517
+```
+
+`-517` 是：`-EPROBE_DEFER`. 含义是：
+
+> 依赖的 DMA provider 还没有准备好，让驱动稍后再试。
+
+这 **不是配置错误**。这是 Linux 设备模型的正常依赖处理机制。
+
+时间线：
+
+```
+11.009  xvip 开始 probe
+11.032  dma_request_chan() → -517
+11.100  xvip probe 失败
+
+11.698  zynqmp-dma controller probe success
+11.844  frmbuf probe success
+11.985  xvip 第二次 probe 成功
+12.012  device registered
+```
+
+说明：
+
+ ✔ 第一次 `probe` 失败（因为 `DMA controller `还没加载）
+ ✔ 内核自动延迟
+ ✔ `DMA controller` 加载
+ ✔ `xvip` 再次 `probe `成功
+
+这`DMA`状态完全正常, `Entity`这几个才有疑问, 但官方文档也`type V4L2 subdev subtype Unknown`, 正常的`warning`而已.
+
+
+
+# `hdmi 2.1 tx`
+
+https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/2915205121/Xilinx+DRM+KMS+HDMI+2.1+TX+Subsystem+Driver
+
+https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/2335670297/Xilinx+HDMI+2.1+PHY+driver
+
+https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/3291185224/HDMI+2.1+Tx+Subsystem+standalone+driver
+
+https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/3291185254/HDMI+2.1+PHY+GT+Controller+standalone+driver
+
+
+
+
+
+
+
+
 
