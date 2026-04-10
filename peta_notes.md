@@ -67,12 +67,19 @@ petalinux-build -c device-tree -x cleansstate
 petalinux-build -c device-tree
 ```
 
-或许可以避免全部重编译
+或许加上下面的可以避免全部重编译
 
 ```
 petalinux-build -c bootloader -x cleansstate
 petalinux-build -c pmu-firmware -x cleansstate
 petalinux-build -c u-boot -x cleansstate
+petalinux-build -c linux-xlnx -x cleansstate
+```
+
+也可以`distclean`
+
+```
+petalinux-build -c bootloader -x distclean
 ```
 
 
@@ -1510,9 +1517,15 @@ $ cd ../../../../../
 
 $ petalinux-build
 
-$ petalinux-build --sdk
-$ petalinux-package --sysroot
+$ petalinux-build --sdk			# This command builds SDK and deploys it at <plnx-proj-root>/images/linux/sdk.sh.
+$ petalinux-package --sysroot	# This command installs SDK at <plnx-proj-root>/images/linux/sdk.
 
+$ petalinux-build --esdk 		# This command builds the eSDK and copies it at <proj_root>/images/linux/esdk.sh.
+
+$ petalinux-build --archiver	# To pack all the components of petalinux-build. You can find the archiver tar in <plnx-proj-root>/images/linux.
+$ petalinux-build --sdk --archiver  # To pack only the sysroot components, You can find the archiver tar in <plnx-proj-root>/images/linux.
+
+# 更多查 `UG1144`
 ```
 
 
@@ -3623,7 +3636,7 @@ MODULE_PARM_DESC(mixer_primary_enable, "Enable mixer primary plane (default: 1)"
 
 
 
-#### 修改内核代码
+#### 修改内核源码
 
 ```bash
 petalinux-devtool modify linux-xlnx
@@ -3640,10 +3653,11 @@ petalinux-devtool finish linux-xlnx	${PWD}/project-spec/meta-user
 petalinux-devtool status		
 # 如果 No recipes currently in your workspace
 rm -rf components/yocto/workspace/sources/linux-xlnx
+
 # or 
-# petalinux-devtool update-recipe linux-xlnx -a ${PWD}/project-spec/meta-user
+petalinux-devtool update-recipe linux-xlnx -a ${PWD}/project-spec/meta-user	# 每次commit会产生一个patch
 # +
-# petalinux-devtool reset linux-xlnx
+petalinux-devtool reset linux-xlnx 	# 这里让源码不生效而已, 但是不会自动删掉源码目录, 建议这里把components/yocto/workspace/appends/linux-xlnx_2022.2.bbappend自己备份一下, 如果需要载再修改, 就基于这个源码的修改的git, 再解开就是生效, 且之前的git提交还在
 
 # if needed
 petalinux-build -x mrproper
@@ -10797,6 +10811,32 @@ i2ctransfer -f -y 0 w3@0x0B 0x00 0x41 0x1A
 
 
 
+#### `VBO+IMX678`合并到一个驱动
+
+前面的`vbyone`驱动两个器件单独由一个驱动去上电配置一次,  摄像头是`stream on`才上电和配置(不是一次性配置).
+
+物理上, `ser+camera`是外部可以随时拿掉的部分, 而`des`可以上电配置. 
+
+也就是说最好是把`vbyone`驱动作为`v4l`节点, 仿照摄像头驱动去实现, 传递`stream on`, 且在摄像头的后一级(相当于数据流上插入了一级)
+
+那么一个简单的做法是合并为一个驱动,  摄像头`stream on`就配置一次`serdes`, 逻辑上就相当于没有插入一级`v4l2`的`graph`, 实际上也能达到目标.
+
+```
+media-ctl -d /dev/media0 -V "\"thcv24xap_imx678 0-001a\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":1 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":0 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+
+gst-launch-1.0 v4l2src device=/dev/video0 '!' video/x-raw, format=NV12, width=3840, height=2160, framerate=60/1 '!' queue '!' kmssink bus-id=a0060000.v_mix fullscreen-overlay=1
+```
+
 
 
 
@@ -11013,6 +11053,784 @@ dma_request_chan() failed, ret = -517
 
 
 
+## `GUI` 图形层
+
+### 关于各图层输出`tpg`或`cam`的一些记录
+
+首先, 修正`v_mix`,  `AB24->AR24`.
+
+其次, `dts`修正. 不用修改那么多
+
+默认 `/sys/module/xlnx_mixer/parameters/mixer_primary_enable` 是 `Y`就可以, 不用改, 只和显示不显示彩条有关. 实际上, 关掉的话`primary layer`就只有蓝色背景而不显示其他. 所以, 最好保持默认一直打开!
+
+如果`xlnx,layer-primary`设置到比如`AR24`这一层
+
+```
+echo Y > /sys/module/xlnx_mixer/parameters/mixer_primary_enable		# mixer_primary 有竖条图案
+
+modetest -M xlnx -s 41@39:3840x2160-60@AR24							# good
+modetest -M xlnx -s 41@39:3840x2160-60 -P 38@39:3840x2160@BG24		# no disp
+modetest -M xlnx -s 41@39:3840x2160-60 -P 37@39:3840x2160@AR24		# 叠加的disp.
+modetest -M xlnx -s 41@39:3840x2160-60 -P 36@39:3840x2160@UYVY      # good
+modetest -M xlnx -s 41@39:3840x2160-60 -P 35@39:3840x2160@YUYV      # good
+modetest -M xlnx -s 41@39:3840x2160-60 -P 34@39:3840x2160@NV12      # good
+```
+
+默认`xlnx,layer-primary`是`xlnx,layer-streaming`
+
+```
+echo Y > /sys/module/xlnx_mixer/parameters/mixer_primary_enable		# mixer_primary 有竖条图案
+
+modetest -M xlnx -s 41@39:3840x2160-60@AR24							 # no disp(如果blue就不变)
+modetest -M xlnx -s 41:3840x2160-60@BG24							 # good 竖条	要先执行, 否则都 no disp
+modetest -M xlnx -s 41@39:3840x2160-60@BG24	                        # good 竖条  要先执行, 否则都 no disp
+modetest -M xlnx -s 41@39:3840x2160-60 -P 38@39:3840x2160@BG24		# good 斜条
+modetest -M xlnx -s 41@39:3840x2160-60 -P 37@39:3840x2160@AR24		# 斜条 叠加半透明区.
+modetest -M xlnx -s 41@39:3840x2160-60 -P 36@39:3840x2160@UYVY      # good 斜条
+modetest -M xlnx -s 41@39:3840x2160-60 -P 35@39:3840x2160@YUYV      # good 斜条
+modetest -M xlnx -s 41@39:3840x2160-60 -P 34@39:3840x2160@NV12      # good 斜条
+```
+
+
+
+```
+echo N > /sys/module/xlnx_mixer/parameters/mixer_primary_enable		# mixer_primary 无竖条图案
+
+modetest -M xlnx -s 41@39:3840x2160-60@AR24							 # no disp(如果blue就不变)
+modetest -M xlnx -s 41:3840x2160-60@BG24							 # blue  要先执行, 否则都 no disp
+modetest -M xlnx -s 41@39:3840x2160-60@BG24	                        # blue  要先执行, 否则都 no disp
+modetest -M xlnx -s 41@39:3840x2160-60 -P 38@39:3840x2160@BG24		# no disp(如果blue就不变)
+modetest -M xlnx -s 41@39:3840x2160-60 -P 37@39:3840x2160@AR24		# 斜条 叠加半透明区.
+modetest -M xlnx -s 41@39:3840x2160-60 -P 36@39:3840x2160@UYVY      # good 斜条
+modetest -M xlnx -s 41@39:3840x2160-60 -P 35@39:3840x2160@YUYV      # good 斜条
+modetest -M xlnx -s 41@39:3840x2160-60 -P 34@39:3840x2160@NV12      # good 斜条
+
+
+modetest -M xlnx -s 41@39:3840x2160-60 -P 34@39:1920x1080@NV12      # good 居中
+modetest -M xlnx -s 41@39:1920x1080-60 -P 34@39:3840x2160@NV12      # 会黑屏(crash)
+modetest -M xlnx -s 41@39:3840x2160-60 -P 38@39:1920x1080@BG24      # 会黑屏, 但能设置`mixer_primary`起时序回复
+
+
+```
+
+
+
+先设置`mixer_primary`起时序, 然后
+
+```
+modetest -M xlnx -s 41@39:3840x2160-60@BG24			# 要对应`xlnx,layer-primary`设置的层的格式,在`dts`查看
+modetest -M xlnx -P 34@39:3840x2160@NV12			# == modetest -M xlnx -s 41@39:3840x2160-60 -P 34@39:3840x2160@NV12
+modetest -M xlnx -w 34:scale:1		# 如果34对应层选了scale
+modetest -M xlnx -w 34:alpha:0		# 如果34对应层选了alpha, 默认值是256
+modetest -M xlnx -w 34:alpha:256	# 如果34对应层选了alpha
+modetest -M xlnx -w 34:bg_color:255	# 某些RBG格式图层有`background color`这个属性
+```
+
+```
+modetest -M xlnx -w 37:alpha:0
+```
+
+
+
+摄像头走`NV12`
+```
+media-ctl -d /dev/media0 -V "\"thcv24xap_imx678 0-001a\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":1 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":0 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+
+gst-launch-1.0 v4l2src device=/dev/video0 '!' video/x-raw, format=NV12, width=3840, height=2160, framerate=60/1 '!' queue '!' kmssink bus-id=a0060000.v_mix fullscreen-overlay=2    # 非法值
+gst-launch-1.0 v4l2src device=/dev/video0 '!' video/x-raw, format=NV12, width=3840, height=2160, framerate=60/1 '!' queue '!' kmssink bus-id=a0060000.v_mix fullscreen-overlay=1    # 能显示
+gst-launch-1.0 v4l2src device=/dev/video0 '!' video/x-raw, format=NV12, width=3840, height=2160, framerate=60/1 '!' queue '!' kmssink bus-id=a0060000.v_mix fullscreen-overlay=0    # 能显示
+
+#OK
+gst-launch-1.0 -v \
+v4l2src device=/dev/video0 io-mode=0 do-timestamp=true ! \
+video/x-raw,format=NV12,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=34 sync=false
+
+#OK
+gst-launch-1.0 -v \
+v4l2src device=/dev/video0 io-mode=4 do-timestamp=true ! \
+video/x-raw,format=NV12,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=34 sync=false
+
+#OK
+gst-launch-1.0 -v \
+v4l2src device=/dev/video0 io-mode=5 do-timestamp=true ! \
+video/x-raw,format=NV12,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=34 sync=false
+
+#NG
+gst-launch-1.0 -v \
+v4l2src device=/dev/video0 io-mode=0 do-timestamp=true ! \
+video/x-raw,format=NV12,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=35 sync=false
+
+#NG
+gst-launch-1.0 -v \
+v4l2src device=/dev/video0 io-mode=0 do-timestamp=true ! \
+video/x-raw,format=NV12,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=36 sync=false
+
+#NG
+gst-launch-1.0 -v \
+v4l2src device=/dev/video0 io-mode=0 do-timestamp=true ! \
+video/x-raw,format=NV12,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=37 sync=false
+
+#NG
+gst-launch-1.0 -v \
+v4l2src device=/dev/video0 io-mode=0 do-timestamp=true ! \
+video/x-raw,format=NV12,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=38 sync=false
+```
+
+
+
+
+彩条走`UVYV`
+```
+modetest -M xlnx -s 41@39:3840x2160-60@BG24
+v4l2-ctl -d /dev/video1 --all
+media-ctl -d /dev/media1 -p
+media-ctl -v -d /dev/media1 -V "\"a0140000.v_tpg\":0 [fmt:RGB888_1X24/3840x2160@1/60 field:none]"       # dts写死了UYVY, 不能动态修改
+media-ctl -d /dev/media1 -p
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern=4   # red
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern=8   # white
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_foreground_patter=1
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_motion_speed=1
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_box_size=50
+
+# dts写死了UYVY, 不能动态修改
+gst-launch-1.0 -v v4l2src device="/dev/video1" io-mode=4 ! video/x-raw, width=3840, height=2160, framerate=60/1, format=RGB! queue max-size-bytes=0 ! videoconvert ! kmssink driver-name=xlnx
+
+# dts写死了UYVY, 不能动态修改, 下面的可用
+gst-launch-1.0 -v v4l2src device="/dev/video1" io-mode=4 ! video/x-raw, width=3840, height=2160, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! videoconvert ! kmssink driver-name=xlnx plane-id=36
+gst-launch-1.0 -v v4l2src device="/dev/video1" io-mode=4 ! video/x-raw, width=3840, height=2160, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! queue ! kmssink driver-name=xlnx plane-id=36
+gst-launch-1.0 -v v4l2src device="/dev/video1" io-mode=4 ! video/x-raw, width=3840, height=2160, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink driver-name=xlnx plane-id=36
+gst-launch-1.0 \
+v4l2src device=/dev/video1 io-mode=4 ! \
+video/x-raw,format=UYVY,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=36 sync=false
+```
+
+
+
+
+
+
+
+
+摄像头走`BG24`
+
+```
+
+v4l2-ctl -d /dev/video0 --all
+media-ctl -d /dev/media0 -p
+media-ctl -d /dev/media0 -V "\"thcv24xap_imx678 0-001a\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":1 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -p
+v4l2-ctl -d /dev/video0 --list-formats-ext
+v4l2-ctl -d /dev/video0 --set-fmt-video=width=3840,height=2160,pixelformat=RGB3
+v4l2-ctl -d /dev/video0 --all
+
+echo Y > /sys/module/xlnx_mixer/parameters/mixer_primary_enable
+
+#OK(不管分量问题)
+gst-launch-1.0 -v \
+v4l2src device=/dev/video0 io-mode=4 do-timestamp=true ! \
+video/x-raw,format=RGB,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=38 sync=false	
+
+#NG
+v4l2-ctl -d /dev/video0 --set-fmt-video=width=3840,height=2160,pixelformat=XR24 # 对gst而言没有意义
+gst-launch-1.0 -v \
+v4l2src device=/dev/video0 io-mode=4 do-timestamp=true ! \
+video/x-raw,format=BGRx,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=37 sync=false
+#NG
+v4l2src device=/dev/video0 io-mode=4 do-timestamp=true ! \
+video/x-raw,format=RGBx,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=37 sync=false
+```
+至少能通过 stream layer 显示摄像头, 先不管`RBG`到`RGB`或`BGR`的分量顺序问题.
+
+
+
+### `10bit pipeline tips`:
+
+```
+
+Bayer（RAW）阶段: SRGGB10_1X10
+Demosaic之后: RBG101010_1X30(axis) 或 RGB101010_1X30
+YUV pipeline: VYYUYY10_1X30 （Xilinx 特有打包格式）或 UYVY10_1X20   （4:2:2 10bit）
+```
+
+
+
+### 叠加图层测试
+
+下面这样验证`AR24`叠加图层到video层
+
+```
+media-ctl -d /dev/media0 -V "\"thcv24xap_imx678 0-001a\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":1 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":0 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+# 显示OK
+gst-launch-1.0 v4l2src device=/dev/video0 ! \
+  video/x-raw,format=NV12,width=3840,height=2160 ! \
+  kmssink plane-id=34
+
+
+modetest -M xlnx -s 41@39:3840x2160-60@BG24	        # 蓝色背景
+modetest -M xlnx -P 37@39:800x600+100+100@AR24 &      # 小窗口显示
+
+modetest -M xlnx -P 34@39:800x600+1000+100@NV12     # 再显示个小窗口
+# 替代NV12的那个小窗口, 显示摄像头的, 在AR这个图层的下面
+gst-launch-1.0 v4l2src device=/dev/video0 ! \
+  video/x-raw,format=NV12,width=3840,height=2160 ! \
+  kmssink plane-id=34
+# 透明一些
+modetest -M xlnx -w 37:alpha:200
+# 全透明
+modetest -M xlnx -w 37:alpha:0
+# 还原
+modetest -M xlnx -w 37:alpha:256
+
+
+modetest -M xlnx -P 36@39:800x600+1000+100@UYVY &
+
+modetest -M xlnx -P 38@39:800x600+1000+100@BG24     # 挂了!
+```
+
+也就是`qt`等界面应用程序走`AR24`图层,  叠加到video层上. 如果video要走非压缩的, 前面已经试验过摄像头走`BG24`. 目前都基于`8bit`色深实验的.
+
+
+
+### 导出`sdk`包含`Qt`库
+
+```
+WARNING: qtserialbus-5.15.2+gitAUTOINC+1aa9b03756-r0 do_fetch: Failed to fetch URL git://code.qt.io/qt/qtserialbus.git;name=qtserialbus;branch=5.15.2;protocol=git, attempting MIRRORS if available
+WARNING: qt3d-5.15.2+gitAUTOINC+34171b1d99-r0 do_fetch: Failed to fetch URL git://code.qt.io/qt/qt3d.git;name=qt3d;branch=5.15.2;protocol=git, attempting MIRRORS if available
+ERROR: qtserialbus-5.15.2+gitAUTOINC+1aa9b03756-r0 do_fetch: Fetcher failure: Unable to find revision 1aa9b03756baead139943712839af5ecedeb2989 in branch 5.15.2 even from upstream
+ERROR: qtserialbus-5.15.2+gitAUTOINC+1aa9b03756-r0 do_fetch: Fetcher failure for URL: 'git://code.qt.io/qt/qtserialbus.git;name=qtserialbus;branch=5.15.2;protocol=git'. Unable to fetch URL from any source.
+ERROR: Logfile of failure stored in: /home/andy/workdir/zirui/06_vcu_trd_port/tmp/test1/petalinux/build/tmp/work/cortexa72-cortexa53-xilinx-linux/qtserialbus/5.15.2+gitAUTOINC+1aa9b03756-r0/temp/log.do_fetch.1980594
+ERROR: Task (/home/andy/workdir/zirui/06_vcu_trd_port/tmp/test1/petalinux/components/yocto/layers/meta-qt5/recipes-qt/qt5/qtserialbus_git.bb:do_fetch) failed with exit code '1'
+ERROR: qt3d-5.15.2+gitAUTOINC+34171b1d99-r0 do_fetch: Fetcher failure: Unable to find revision 34171b1d99f55fde1627df3c57eed50480ab2ae7 in branch 5.15.2 even from upstream
+ERROR: qt3d-5.15.2+gitAUTOINC+34171b1d99-r0 do_fetch: Fetcher failure for URL: 'git://code.qt.io/qt/qt3d.git;name=qt3d;branch=5.15.2;protocol=git'. Unable to fetch URL from any source.
+ERROR: Logfile of failure stored in: /home/andy/workdir/zirui/06_vcu_trd_port/tmp/test1/petalinux/build/tmp/work/cortexa72-cortexa53-xilinx-linux/qt3d/5.15.2+gitAUTOINC+34171b1d99-r0/temp/log.do_fetch.1980593
+ERROR: Task (/home/andy/workdir/zirui/06_vcu_trd_port/tmp/test1/petalinux/components/yocto/layers/meta-qt5/recipes-qt/qt5/qt3d_git.bb:do_fetch) failed with exit code '1'
+WARNING: qt3d-native-5.15.2+gitAUTOINC+34171b1d99-r0 do_fetch: Failed to fetch URL git://code.qt.io/qt/qt3d.git;name=qt3d;branch=5.15.2;protocol=git, attempting MIRRORS if available
+ERROR: qt3d-native-5.15.2+gitAUTOINC+34171b1d99-r0 do_fetch: Fetcher failure: Unable to find revision 34171b1d99f55fde1627df3c57eed50480ab2ae7 in branch 5.15.2 even from upstream
+ERROR: qt3d-native-5.15.2+gitAUTOINC+34171b1d99-r0 do_fetch: Fetcher failure for URL: 'git://code.qt.io/qt/qt3d.git;name=qt3d;branch=5.15.2;protocol=git'. Unable to fetch URL from any source.
+ERROR: Logfile of failure stored in: /home/andy/workdir/zirui/06_vcu_trd_port/tmp/test1/petalinux/build/tmp/work/x86_64-linux/qt3d-native/5.15.2+gitAUTOINC+34171b1d99-r0/temp/log.do_fetch.1980592
+ERROR: Task (virtual:native:/home/andy/workdir/zirui/06_vcu_trd_port/tmp/test1/petalinux/components/yocto/layers/meta-qt5/recipes-qt/qt5/qt3d_git.bb:do_fetch) failed with exit code '1'
+NOTE: Tasks Summary: Attempted 4696 tasks of which 4693 didn't need to be rerun and 3 failed.
+```
+
+
+````
+git clone https://github.com/meta-qt5/meta-qt5
+对比
+components/yocto/layers/meta-qt5
+
+不是直接recipe, 不好直接替换
+
+
+再看
+https://code.qt.io/cgit/qt/qtserialbus.git/浏览器还是能访问
+https://code.qt.io/qt/qtserialbus.git浏览器看是404
+
+直接试试
+git clone git://code.qt.io/qt/qtserialbus.git
+可以的
+
+
+
+
+peta尝试翻墙呢不行
+原因, git://code.qt.io/qt/qtserialbus.git的 branch不存在5.15.2只有5.15没有5.15.2, 但是有v5.15.2的tag
+
+
+
+
+
+project-spec/meta-user/recipes-qt/qt5/qtserialbus_git.bbappend
+```
+QT_MODULE_BRANCH = "5.15"
+QT_MODULE_BRANCH_PARAM = "branch=${QT_MODULE_BRANCH}"
+```
+````
+
+```
+也不行
+
+我需要针对比如qtserialbus,不使用branch,而是用tag来找
+
+```
+
+
+````
+petalinux/project-spec/meta-user/recipes-qt/qt5/qtserialbus_git.bbappend
+```
+QT_MODULE_BRANCH = ""
+QT_MODULE_BRANCH_PARAM = ""
+SRC_URI = "git://code.qt.io/qt/qtserialbus.git"
+SRCREV = "1aa9b03756baead139943712839af5ecedeb2989"
+```
+````
+然后取消代理
+```
+petalinux-build
+```
+可以
+```
+petalinux-build --sdk
+```
+还是拉取不了
+
+```
+ERROR: qtserialbus-5.15.2+gitAUTOINC+1aa9b03756-r0 do_fetch: Fetcher failure: Unable to find revision 1aa9b03756baead139943712839af5ecedeb2989 in branch master even from upstream
+ERROR: qtserialbus-5.15.2+gitAUTOINC+1aa9b03756-r0 do_fetch: Fetcher failure for URL: 'git://code.qt.io/qt/qtserialbus.git'. Unable to fetch URL from any source.
+ERROR: Logfile of failure stored in: /home/andy/workdir/zirui/06_vcu_trd_port/tmp/test1/petalinux/build/tmp/work/cortexa72-cortexa53-xilinx-linux/qtserialbus/5.15.2+gitAUTOINC+1aa9b03756-r0/temp/log.do_fetch.1517311
+ERROR: Task (/home/andy/workdir/zirui/06_vcu_trd_port/tmp/test1/petalinux/components/yocto/layers/meta-qt5/recipes-qt/qt5/qtserialbus_git.bb:do_fetch) failed with exit code '1'
+
+```
+
+最后解决的办法, 参考 
+
+<https://adaptivesupport.amd.com/s/question/0D54U000061f1A9SAI/build-sdk-error-about-petalinux-qt5?language=zh_CN>
+
+<https://adaptivesupport.amd.com/s/article/000034834?language=en_US>
+
+```
+vim project-spec/meta-user/recipes-qt/qt5/qt3d_%.bbappend
+
+SRC_URI = "git://code.qt.io/qt/qt3d.git;name=qt3d;branch=5.15;protocol=git"
+SRCREV = "92853c6e1aa95dfb7d605959ff44ccc124fbd62c"
+
+step3:
+
+vim project-spec/meta-user/recipes-qt/qt5/qtserialbus_%.bbappend
+
+SRC_URI = "git://code.qt.io/qt/qtserialbus.git;name=qt3d;branch=5.15;protocol=git"
+SRCREV = "d3394c81f10e5d5c40663e88e185335549e4bc12"
+
+step4:petalinux-build --sdk
+```
+确实可行
+
+
+
+实际上我自己也在branch里选了一个认为接近的commit
+````
+project-spec/meta-user/recipes-qt/qt5/qtserialbus_git.bbappend
+```
+QT_MODULE_BRANCH = ""
+QT_MODULE_BRANCH_PARAM = ""
+SRC_URI = "git://code.qt.io/qt/qt3d.git;name=qt3d;branch=5.15;protocol=git"
+SRCREV = "92853c6e1aa95dfb7d605959ff44ccc124fbd62c"
+```
+````
+也可以的.
+
+最后, 在`images/linux`产生了`sdk.sh`
+
+
+
+### 安装`sdk.sh`
+
+安装和加载`SDK`, 都要先`unset LD_LIBRARY_PATH`
+
+```
+andy@andy-zirui:~/workdir/zirui/06_vcu_trd_port/tmp/test1/petalinux/images/linux
+$ unset LD_LIBRARY_PATH
+
+andy@andy-zirui:~/workdir/zirui/06_vcu_trd_port/tmp/test1/petalinux/images/linux
+$ ./sdk.sh 
+PetaLinux SDK installer version 2022.2
+======================================
+Enter target directory for SDK (default: /opt/petalinux/2022.2): 
+You are about to install the SDK to "/opt-shadow/petalinux/2022.2". Proceed [Y/n]? y
+Extracting SDK....................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................done
+Setting it up...done
+SDK has been successfully set up and is ready to be used.
+Each time you wish to use the SDK in a new shell session, you need to source the environment setup script e.g.
+ $ . /opt-shadow/petalinux/2022.2/environment-setup-cortexa72-cortexa53-xilinx-linux
+
+andy@andy-zirui:~/workdir/zirui/06_vcu_trd_port/tmp/test1/petalinux/images/linux
+$ . /opt-shadow/petalinux/2022.2/environment-setup-cortexa72-cortexa53-xilinx-linux
+
+```
+
+
+
+### 在摄像头视频上叠加一个带`alpha`的按钮控件
+
+`qt_button_on_ar24_layer/main.cpp`
+
+```
+#include <QApplication>
+#include <QPushButton>
+
+int main(int argc, char *argv[])
+{
+    QApplication app(argc, argv);
+
+    QPushButton btn("Hello");
+
+    // ❗关键：设置“内容区域”大小
+    btn.setFixedSize(300, 150);
+
+    // ❗关键：让按钮作为子控件放到透明窗口中
+    QWidget window;
+    window.resize(3840, 2160);
+    window.setWindowFlags(Qt::FramelessWindowHint);
+    window.setAttribute(Qt::WA_TranslucentBackground);
+
+    btn.setParent(&window);
+
+    // 居中
+    btn.move((3840-300)/2, (2160-150)/2);
+
+    window.show();
+
+    return app.exec();
+}
+
+```
+
+`qmake -project` 之后给`pro`文件进行添加
+
+```
+QT += core gui widgets
+```
+
+然后`qmake`产生`Makefile`, 然后`make`
+
+这个代码可在`host pc`上也编译一份的, 方便预览效果
+
+目标代码复制到板子上, 比如用`tf`卡
+
+
+
+
+
+#### 关于`AR24`层必须设置为`primary layer`
+
+Qt 主流方法使用 EGLFS + KMS
+```
+export QT_QPA_PLATFORM=eglfs
+```
+
+配置 KMS JSON(无效)
+
+`/etc/qt_kms.json`
+```
+{
+  "device": "/dev/dri/card0",
+  "outputs": [
+    {
+      "name": "HDMI-A-1",
+      "mode": "3840x2160",
+      "format": "argb8888"
+    }
+  ],
+  "planes": [
+    {
+      "planeId": 37,
+      "zpos": 1
+    }
+  ]
+}
+```
+然后
+```
+export QT_QPA_EGLFS_KMS_CONFIG=/etc/qt_kms.json
+```
+
+
+
+
+
+在板子无法运行
+
+
+```
+root@petalinux:/run/media/sda1# export DISPLAY=:0.0
+root@petalinux:/run/media/sda1# ./qt_button_on_ar24_layer                                                                                                                                   
+Could not open display
+[  165.649680] audit: type=1701 audit(1637342512.520:6): auid=4294967295 uid=0 gid=0 ses=4294967295 pid=959 comm="qt_button_on_ar" exe="/run/media/sda1/qt_button_on_ar24_layer" sig=6 res=1
+Aborted
+root@petalinux:/run/media/sda1# export DISPLAY=:0  
+root@petalinux:/run/media/sda1# ./qt_button_on_ar24_layer 
+Could not open display
+[  176.821608] audit: type=1701 audit(1637342523.692:7): auid=4294967295 uid=0 gid=0 ses=4294967295 pid=960 comm="qt_button_on_ar" exe="/run/media/sda1/qt_button_on_ar24_layer" sig=6 res=1
+Aborted
+root@petalinux:/run/media/sda1# export QT_QPA_PLATFORM=eglfs
+root@petalinux:/run/media/sda1# export QT_QPA_GENERIC_PLUGINS=libinput
+root@petalinux:/run/media/sda1# export QT_QPA_ENABLE_TERMINAL_KEYBOARD=1
+root@petalinux:/run/media/sda1# export QT_QPA_EGLFS_INTEGRATION=eglfs_x11
+root@petalinux:/run/media/sda1# export DISPLAY=:0.0 
+root@petalinux:/run/media/sda1# ./qt_button_on_ar24_layer 
+Could not open display
+[  205.293557] audit: type=1701 audit(1637342552.164:8): auid=4294967295 uid=0 gid=0 ses=4294967295 pid=961 comm="qt_button_on_ar" exe="/run/media/sda1/qt_button_on_ar24_layer" sig=6 res=1
+Aborted
+root@petalinux:/run/media/sda1# ldd qt_button_on_ar24_layer 
+        linux-vdso.so.1 (0x0000ffff99e37000)
+        libQt5Widgets.so.5 => /usr/lib/libQt5Widgets.so.5 (0x0000ffff996de000)
+        libQt5Core.so.5 => /usr/lib/libQt5Core.so.5 (0x0000ffff99099000)
+        libstdc++.so.6 => /usr/lib/libstdc++.so.6 (0x0000ffff98e7f000)
+        libgcc_s.so.1 => /lib/libgcc_s.so.1 (0x0000ffff98e5a000)
+        libc.so.6 => /lib/libc.so.6 (0x0000ffff98cb3000)
+        /lib/ld-linux-aarch64.so.1 (0x0000ffff99e03000)
+        libQt5Gui.so.5 => /usr/lib/libQt5Gui.so.5 (0x0000ffff98620000)
+        libm.so.6 => /lib/libm.so.6 (0x0000ffff9858b000)
+        libz.so.1 => /lib/libz.so.1 (0x0000ffff98564000)
+        libpcre2-16.so.0 => /usr/lib/libpcre2-16.so.0 (0x0000ffff98507000)
+        libzstd.so.1 => /usr/lib/libzstd.so.1 (0x0000ffff98407000)
+        libglib-2.0.so.0 => /usr/lib/libglib-2.0.so.0 (0x0000ffff982b7000)
+        libMali.so.9 => /usr/lib/libMali.so.9 (0x0000ffff98106000)
+        libpng16.so.16 => /usr/lib/libpng16.so.16 (0x0000ffff980c1000)
+        libpcre.so.1 => /usr/lib/libpcre.so.1 (0x0000ffff9804b000)
+        libpthread.so.0 => /lib/libpthread.so.0 (0x0000ffff98039000)
+        libX11.so.6 => /usr/lib/libX11.so.6 (0x0000ffff97ee6000)
+        libdrm.so.2 => /usr/lib/libdrm.so.2 (0x0000ffff97ebe000)
+        libXfixes.so.3 => /usr/lib/libXfixes.so.3 (0x0000ffff97ea7000)
+        libXext.so.6 => /usr/lib/libXext.so.6 (0x0000ffff97e83000)
+        libXdamage.so.1 => /usr/lib/libXdamage.so.1 (0x0000ffff97e70000)
+        libdl.so.2 => /lib/libdl.so.2 (0x0000ffff97e5e000)
+        librt.so.1 => /lib/librt.so.1 (0x0000ffff97e4c000)
+        libxcb.so.1 => /usr/lib/libxcb.so.1 (0x0000ffff97e10000)
+        libXau.so.6 => /usr/lib/libXau.so.6 (0x0000ffff97dfc000)
+        libXdmcp.so.6 => /usr/lib/libXdmcp.so.6 (0x0000ffff97de5000)
+
+```
+
+```
+xinit /etc/X11/Xsession -- /usr/bin/Xorg :0 -br -pn
+
+
+xinit /etc/X11/xinit/xinitrc -- /usr/bin/X :1
+export DISPLAY=:1
+cd /run/media/sda1/
+./qt_button_on_ar24_layer
+
+cat /var/log/Xorg.0.log
+```
+
+```
+[  1018.196] (EE) ARMSOC(0): ERROR: drm failed to set mode: Invalid argument
+[  1018.196] (EE) ARMSOC(0): ERROR: xf86SetDesiredModes() failed!
+[  1018.196] (EE) ARMSOC(0): ERROR: ARMSOCEnterVT() failed!
+[  1018.200] (EE) 
+[  1018.200] (EE) AddScreen/ScreenInit failed for driver 0
+[  1018.200] (EE) 
+[  1018.200] (EE) 
+[  1018.200] (EE) Please also check the log file at "/var/log/Xorg.0.log" for additional information.
+[  1018.200] (EE) 
+[  1018.447] (EE) Server terminated with error (1). Closing log file.
+
+```
+
+```
+export QT_QPA_PLATFORM=eglfs
+export QT_QPA_EGLFS_INTEGRATION=eglfs_kms
+export QT_QPA_EGLFS_KMS_CONFIG=./qt_kms.json
+```
+
+都不行, 再分析之前有关`startx`的研究,  差异是目前的`stream`层是`primary layer`, 而能运行`startx`的`primary layer`是`AR24`层.
+
+
+
+对比分析 几个`trd`, 结论是, 要设置有`alpha`通道的层是`primary layer`,对好就是`AR24`, 这样`mali gpu`驱动才能输出就能对应上, 才能启动`xorg`, `qt`应用程序才能显示
+
+
+
+那么修改`dts`, `ar24`为`mixer`主层, `startx`有显示
+
+```
+modetest -M xlnx -s 41@39:3840x2160-60@AR24
+
+
+
+media-ctl -d /dev/media0 -V "\"thcv24xap_imx678 0-001a\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":1 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":0 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":1 [fmt:VYYUYY8_1X24/3840x2160 field:none]"
+gst-launch-1.0 v4l2src device=/dev/video0 '!' video/x-raw, format=NV12, width=3840, height=2160, framerate=60/1 '!' queue '!' kmssink bus-id=a0060000.v_mix fullscreen-overlay=0 &
+
+```
+
+这里`gst`的`overlay`必须是0,否则`gui`显示不了.
+
+```
+xinit /etc/X11/xinit/xinitrc -- /usr/bin/X :1 &
+export DISPLAY=:1
+cd /run/media/sda1/
+./qt_button_on_ar24_layer &
+gst-launch-1.0 v4l2src device=/dev/video0 '!' video/x-raw, format=NV12, width=3840, height=2160, framerate=60/1 '!' queue '!' kmssink bus-id=a0060000.v_mix fullscreen-overlay=0 &
+```
+
+`ps`这个 `xinit /etc/X11/Xsession -- /usr/bin/Xorg :0 -br -pn`的`PID`
+
+```
+kill -9 [pid]
+```
+
+
+会出现图形界面, 这里的`USB`鼠标啥的可以用(`04984b57`版本肯定可以)
+
+```
+killall vcu_qt
+killall Xorg
+好像杀不了, xinit会自己再次运行起来
+```
+
+```
+export DISPLAY=:0
+./qt_button_on_ar24_layer &
+也可以显示一下就黑, 不要这样做.
+```
+
+
+
+所以 `base_trd` 的参考价值现在回顾, 很高. v_mix的结构, 还是抄`base_trd`比较合适
+
+
+
+```
+rm /etc/rc5.d/S*xserver-nodm
+
+modetest -D a0060000.v_mix
+```
+
+
+
+
+
+是否要选`libmali-xlnx`?
+
+<https://xilinx.github.io/Embedded-Design-Tutorials/docs/2023.1/build/html/docs/Design_Tutorials/MPSoC_Graphic_Subsystem/README.html?utm_source=chatgpt.com>
+
+```
+Enable GPU Libraries and Other Packages in RootFS¶
+In this section, you will use the PetaLinux RootFS configuration wizard to add the Mali GPU libraries. PetaLinux is shipped with Mali GPU libraries and device drivers for the Mali GPU. By default, the Mali driver is enabled in the kernel tree, but Mali user libraries need to be configured (on an as-needed basis) in the root file system. In addition to this, you will use the same wizard to include the X Window System libraries.
+
+Open the PetaLinux RootFS Configuration wizard:
+
+$ petalinux-config -c rootfs
+
+Navigate to and enable the following packages:
+
+Filesystem Packages ---> libs ---> libmali-xlnx ---> libmali-xlnx
+Filesystem Packages ---> libs ---> libmali-xlnx ---> libmali-xlnx-dev
+These packages enable you to build and run OpenGLES applications targeted for Mali GPU in the Zynq UltraScale+ MPSoC device.
+
+Add the X11 package groups to add X Window related packages:
+
+Petalinux Package Groups > packagegroup-petalinux-x11 >packagegrouppetalinux-
+x11
+Petalinux Package Groups > packagegroup-petalinux-x11 >
+packagegroup-petalinux-x11-dev
+Add the OpenGLES application created in the earlier section:
+
+User Packages \-\--\ \[\*\]tricube
+
+After enabling all the packages, save the config file and exit the RootFS configuration settings.
+
+Build the Linux images using the following command:
+
+$ petalinux-build
+
+Note: If the PetaLinux build fails, use the following commands to build again:
+
+Verify that the image.ub Linux image file is generated in the images/linux directory.
+
+Generate the boot image for this design example as follows:
+
+$ petalinux-package --boot --fsbl images/linux/zynqmp_fsbl.elf --pmufw images/linux/pmufw.elf --atf images/linux/bl31.elf --fpga images/linux/system.bit
+--u-boot images/linux/u-boot.elf
+A BOOT.BIN Boot image is created. It is composed of the FSBL boot loader, the PL bitstream, PMU firmware, ATF, and U-Boot.
+
+IMPORTANT!: This example uses GPU packages based on the X Window System, which is the default setting in PetaLinux 2019.2. To enable Frame Buffer fbdev based GPU packages in PetaLinux 2019.2, add the following line in /project-spec/meta-user/conf/petalinuxbsp.conf:
+
+DISTRO_FEATURES_remove_zynqmp = “ x11”
+
+See the example eglfbdev application (based on fdev) available in the Design Files for This Tutorial. For more information, see Xilinx Answer Record 68821.
+```
+
+
+
+# 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # `hdmi 2.1 tx`
 
 https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/2915205121/Xilinx+DRM+KMS+HDMI+2.1+TX+Subsystem+Driver
@@ -11022,6 +11840,2312 @@ https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/2335670297/Xilinx+HDMI+2.1
 https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/3291185224/HDMI+2.1+Tx+Subsystem+standalone+driver
 
 https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/3291185254/HDMI+2.1+PHY+GT+Controller+standalone+driver
+
+目前板子上`retimer`物理上不支持. abort
+
+
+
+
+
+# `DP 1.4 TX`
+
+
+
+为了添加 `dp` 和 `sdi`, 要做一些准备工作
+
+* 整理`hier`
+* 验证`vphy`是否可以置于`hier`中
+
+
+
+关于`vphy`, 设置下面这个, 好像不起作用. 
+
+```
+set_property DONT_TOUCH true [get_cells -hier -filter {NAME =~ *vphy*}]
+```
+
+
+
+观察`dts`修改是否生效
+
+```
+zcat /proc/config.gz | grep mix
+ls /proc/device-tree/amba_pl@0/ | grep mix
+dtc -I fs /proc/device-tree -O dts | grep -n mix
+```
+
+
+
+一般要
+
+```
+petalinux-build -c fsbl-firmware -x cleansstate
+petalinux-build -c pmu-firmware -x cleansstate
+petalinux-build -c device-tree -x cleansstate
+
+petalinux-build -c bootloader -x distclean
+```
+
+
+
+## 添加`s2v`转`native video`再复制( 目前报错 )
+
+碰到几个问题
+
+* `dts`自动产生失败. 可以关闭自动`dtg`, 直接用之前的版本, 能通过编译
+
+* 但是板子不能显示, 目前复制和不复制都试了, 只要是转`native video`, 都不能显示. `refclk`参考灯没有亮. 极大可能是破坏了 `Xilinx Video Framework` 的`graph`结构, 驱动不去配置外部`pll`
+
+  
+
+```
+killall Xorg
+modetest -D a0060000.v_mix -s 41@39:3840x2160-60@AR24
+
+devmem 0xa0000000								# 查看hw_ver
+modetest -M xlnx  -s 41@39:3840x2160-60@AR24
+
+dmesg | grep hdmi
+dmesg | grep xlinx
+cat /sys/kernel/debug/clk/clk_summary | grep -i hdmi
+
+```
+
+
+
+为验证 `v_mix`到`hdmi_txss`的耦合程度. 中间插入`axis_fifo`, 看是否视频输出会挂. (不会挂, 能显示)
+
+接下来, 用`broadcaster`分三, 两个先悬空, 一个接`axis_fifo`到`hdmi_txss`, 看能不能显示 (`dts自动产生失败`, 改为静态`dts`才编译出目标文件 )
+
+```
+[   20.578756] xlnx-mixer a0060000.v_mix: vtc bridge property not present
+[   20.585388] xlnx-mixer a0060000.v_mix: Xilinx Mixer driver probed success
+
+[   23.464417] xlnx-drm-hdmi a0040000.v_hdmi_tx_ss: probe started
+[   23.470330] xlnx-drm-hdmi a0040000.v_hdmi_tx_ss: hdmi tx audio disabled in DT
+[   23.511056] xlnx-drm-hdmi a0040000.v_hdmi_tx_ss: probe successful
+[   23.517653] xlnx-mixer a0060000.v_mix: disp bridge property not present
+[   23.522216] Not sending HOTPLUG event because drm device is NULL as drm_connector_init is not called yet.
+[   23.524472] xlnx-mixer a0060000.v_mix: Registered mixer CRTC with id: 39
+[   23.540603] xlnx-drm xlnx-drm.0: bound a0060000.v_mix (ops 0xffff800008e79668)
+[   23.547889] xlnx-drm xlnx-drm.0: bound a0040000.v_hdmi_tx_ss (ops xlnx_drm_hdmi_driver_exit [xilinx_hdmi_tx])
+```
+
+这里的`disp bridge property`哪来的?
+
+
+
+接下来, 用`broadcaster`分三, 两个多的接`terminator`, 这次能显示.
+
+
+
+接下来, 实验自定义的`axis ip`比如`passthrough_monitor`, 放在`v_mix`和`hdmi_txss`之间, 看看是否能点亮屏幕(可以!)
+
+
+
+接下来, 用`broadcaster`分三的版本, 去掉`hdmi_tx`实现一个`sdi_tx`.
+
+
+
+
+
+
+
+# `SDI 12G TX`
+
+
+
+从hdmi-tx的peta工程和sdi-tx的裸机工程合并来的, 系统启动后无法运行或报错.
+
+关键的dts参考
+
+<https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/18841950/Xilinx+DRM+KMS+SDI-Tx+Driver>
+
+`linux-xlnx/Documentation/devicetree/bindings/display/xlnx/xlnx,sdi-tx.txt`
+
+```
+&sdi_tx_hier_v_smpte_uhdsdi_tx_ss {
+    clock-names = "sdi_tx_clk", "video_in_clk", "s_axi_aclk";
+    clocks = <&idt8t49n24x 1>, <&zynqmp_clk 74>, <&zynqmp_clk 71>;
+    //phy-reset-gpio = <&processor_subsystem_rest_gpio 13 0>;
+    phy-reset-gpio = <&processor_subsystem_rest_gpio 13 0 0>;
+    //reset-gpios = <&processor_subsystem_rest_gpio 13 0 1>;
+    //reset-gpios = <&processor_subsystem_rest_gpio 13 1>;
+    //reset-gpios = <&processor_subsystem_rest_gpio 13 0>;
+    xlnx,qpll1_enabled;
+};
+```
+
+具体报错类似
+
+```
+[   20.600853] idt8t49n24x 1-007c: idt24x_set_rate. calling idt24x_set_frequency for Q1. rate: 148500000
+[   20.612090] zynqmp_pll_disable() clock disable failed for apll_int, ret = -13
+[   20.647791] xlnx-mixer a0060000.v_mix: disp bridge property not present
+[   20.654489] xlnx-mixer a0060000.v_mix: Registered mixer CRTC with id: 39
+[   20.661201] xlnx-drm xlnx-drm.0: bound a0060000.v_mix (ops 0xffff800008e79668)
+[   20.668446] xlnx-drm xlnx-drm.0: bound a0040000.v_smpte_uhdsdi_tx_ss (ops 0xffff800008e79ef0)
+[   20.695275] xlnx-sdi-tx a0040000.v_smpte_uhdsdi_tx_ss: clkrate = 148500000 is_frac = 0
+[   20.750325] xlnx-sdi-tx a0040000.v_smpte_uhdsdi_tx_ss: AXI-4 Stream Underflow error
+[   20.815048] xlnx-sdi-tx a0040000.v_smpte_uhdsdi_tx_ss: Timeout: GT interrupt not received
+[   20.919047] ------------[ cut here ]------------
+[   20.919050] [CRTC:39:crtc-0] vblank wait timed out
+[   20.919089] WARNING: CPU: 1 PID: 8 at drivers/gpu/drm/drm_atomic_helper.c:1514 drm_atomic_helper_wait_for_vblanks.part.0+0x278/0x2a0
+[   20.919105] Modules linked in:
+[   20.919113] CPU: 1 PID: 8 Comm: kworker/u8:0 Not tainted 5.15.36-xilinx-v2022.2 #1
+[   20.919119] Hardware name: xlnx,zynqmp (DT)
+[   20.919124] Workqueue: events_unbound deferred_probe_work_func
+[   20.919133] pstate: 60000005 (nZCv daif -PAN -UAO -TCO -DIT -SSBS BTYPE=--)
+[   20.919140] pc : drm_atomic_helper_wait_for_vblanks.part.0+0x278/0x2a0
+[   20.919148] lr : drm_atomic_helper_wait_for_vblanks.part.0+0x278/0x2a0
+[   20.919154] sp : ffff8000095fb410
+[   20.919157] x29: ffff8000095fb410 x28: 0000000000000001 x27: 0000000000000000
+[   20.919167] x26: 0000000000000001 x25: 0000000000000038 x24: ffff00084562c000
+[   20.919176] x23: 0000000000000001 x22: 0000000000000000 x21: ffff0008455f5e00
+[   20.919185] x20: ffff00084562a100 x19: 0000000000000000 x18: ffffffffffffffff
+[   20.919194] x17: 0000000000000004 x16: 0000000000000004 x15: ffff8000094b93f0
+[   20.919203] x14: 0000000000000000 x13: 0a74756f2064656d x12: 6974207469617720
+[   20.919212] x11: 656820747563205b x10: 000000000000003a x9 : 0000000000000027
+[   20.919221] x8 : 00000000ffffffff x7 : ffff800009404210 x6 : 0000000000000000
+[   20.919230] x5 : 00000000fffff95f x4 : 0000000000000000 x3 : 0000000000000000
+[   20.919239] x2 : 0000000000000000 x1 : 0000000000000000 x0 : ffff0008000e0100
+[   20.919248] Call trace:
+[   20.919251]  drm_atomic_helper_wait_for_vblanks.part.0+0x278/0x2a0
+[   20.919259]  drm_atomic_helper_commit_tail+0x80/0xa0
+[   20.919266]  commit_tail+0x128/0x17c
+[   20.919272]  drm_atomic_helper_commit+0x148/0x174
+[   20.919279]  drm_atomic_commit+0x4c/0x60
+[   20.919287]  drm_client_modeset_commit_atomic+0x20c/0x250
+[   20.919294]  drm_client_modeset_commit_locked+0x5c/0x1a0
+[   20.919300]  drm_client_modeset_commit+0x30/0x60
+[   20.919306]  drm_fb_helper_set_par+0xc8/0x120
+[   20.919313]  fbcon_init+0x3b8/0x504
+[   20.919320]  visual_init+0xb4/0x104
+[   20.919327]  do_bind_con_driver.isra.0+0x1c4/0x394
+[   20.919334]  do_take_over_console+0x144/0x1fc
+[   20.919341]  do_fbcon_takeover+0x70/0xe0
+[   20.919347]  fbcon_fb_registered+0x100/0x11c
+[   20.919353]  register_framebuffer+0x210/0x32c
+[   20.919362]  __drm_fb_helper_initial_config_and_unlock+0x334/0x540
+
+
+
+xlnx_stc_disable
+xlnx_stc_reset
+导致系统崩溃
+```
+
+简单反转reset属性甚至都无法启动完毕.
+
+必须找一个sdi-tx的peta工程例子, 官网论坛有个`ZCU106 SDI-TX reference design`
+
+<https://adaptivesupport.amd.com/s/article/1170471>
+
+很遗憾, 这个是裸机例子
+
+那么能找到的例子也就只有`rdf0428-zcu106-vcu-trd-2022-2/pl/build/zcu106_picxo_llp2_sdi`
+
+和`https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/541688160/Zynq+UltraScale+MPSoC+VCU+TRD+2020.1+-+SDI+Video+Display`
+
+看起来2020.1的这个vcu_trd里面这个`sditx`比较符合需要. 先看看这个和我的区别
+
+打开`vivado 2020.1`在`rdf0428-zcu106-vcu-trd-2020.1/pl`目录运行
+
+```
+source designs/zcu106_sditx/project.tcl
+```
+
+参考这个工程, 修改我的工程
+
+(版本6113ae3b@sdi_txss_only)启动过程没啥卡住的, 执行类似这样的命令
+
+```
+modetest -M xlnx -s 37:3840x2160-60@XV20  -w 37:sdi_mode:5 -w 37:sdi_data_stream:8 -w 37:is_frac:0
+
+modetest -M xlnx -s 37:3840x2160-60@XV20
+```
+
+操作系统就挂掉了, 无法恢复
+
+```
+root@petalinux:~# modetest -M xlnx -s 37:3840x2160-60@XV20
+setting mode 3840x2160-60.00Hz on connectors 37, crtc 33
+[   55.261471] xlnx-sdi-tx a0040000.v_smpte_uhdsdi_tx_ss: clkrate = 148500000 is_frac = 0
+[   55.324328] SError Interrupt on CPU1, code 0xbf000002 -- SError
+[   55.324338] CPU: 1 PID: 805 Comm: modetest Tainted: G           O      5.15.36-xilinx-v2022.2 #1
+[   55.324345] Hardware name: xlnx,zynqmp (DT)
+[   55.324348] pstate: 00000005 (nzcv daif -PAN -UAO -TCO -DIT -SSBS BTYPE=--)
+[   55.324355] pc : el1_abort+0x30/0x6c
+[   55.324366] lr : el1_abort+0x24/0x6c
+[   55.324373] sp : ffff800009c43820
+[   55.324375] x29: ffff800009c43820 x28: ffff0008009a90c0 x27: ffff000847271e18
+[   55.324385] x26: ffff000847271e90 x25: ffff000847682a00 x24: ffff80000908afe8
+[   55.324393] x23: 0000000060000005 x22: ffff80000874d9d4 x21: ffff80000b050000
+[   55.324402] x20: 0000000096000210 x19: ffff800009c43860 x18: ffffffffffffffff
+[   55.324410] x17: 6920303030303035 x16: 383431203d206574 x15: 61726b6c63203a73
+[   55.324419] x14: 735f78745f696473 x13: ffff8000093d6128 x12: 00000000000005b8
+[   55.324427] x11: 00000000000001e8 x10: ffff8000093d6128 x9 : ffff8000093d6128
+[   55.324435] x8 : 00000000fffff7ff x7 : ffff800009402128 x6 : 00000000001220a0
+[   55.324443] x5 : ffff800009c43860 x4 : 0000002000000000 x3 : 0000000000000025
+[   55.324451] x2 : 0000002200000000 x1 : 0000000096000210 x0 : 0000000000000000
+[   55.324460] Kernel panic - not syncing: Asynchronous SError Interrupt
+[   55.324464] CPU: 1 PID: 805 Comm: modetest Tainted: G           O      5.15.36-xilinx-v2022.2 #1
+[   55.324470] Hardware name: xlnx,zynqmp (DT)
+[   55.324473] Call trace:
+[   55.324474]  dump_backtrace+0x0/0x190
+[   55.324484]  show_stack+0x18/0x30
+[   55.324491]  dump_stack_lvl+0x7c/0xa0
+[   55.324498]  dump_stack+0x18/0x34
+[   55.324504]  panic+0x14c/0x30c
+[   55.324509]  add_taint+0x0/0xb0
+[   55.324515]  arm64_serror_panic+0x6c/0x7c
+[   55.324521]  do_serror+0x28/0x60
+[   55.324525]  el1h_64_error_handler+0x30/0x50
+[   55.324532]  el1h_64_error+0x78/0x7c
+[   55.324537]  el1_abort+0x30/0x6c
+[   55.324544]  el1h_64_sync_handler+0xa4/0xd0
+[   55.324551]  el1h_64_sync+0x78/0x7c
+[   55.324556]  xlnx_stc_reset+0x14/0x40
+[   55.324562]  crtc_set_mode.constprop.0+0x140/0x1a0
+[   55.324570]  drm_atomic_helper_commit_tail+0x40/0xa0
+[   55.324577]  commit_tail+0x128/0x17c
+[   55.324583]  drm_atomic_helper_commit+0x148/0x174
+[   55.324589]  drm_atomic_commit+0x4c/0x60
+[   55.324597]  drm_atomic_helper_set_config+0xa4/0x100
+[   55.324603]  drm_mode_setcrtc+0x19c/0x670
+[   55.324612]  drm_ioctl_kernel+0xc4/0x11c
+[   55.324618]  drm_ioctl+0x214/0x44c
+[   55.324624]  __arm64_sys_ioctl+0xb8/0xe0
+[   55.324632]  invoke_syscall+0x54/0x124
+[   55.324639]  el0_svc_common.constprop.0+0xd4/0xfc
+[   55.324645]  do_el0_svc+0x48/0xb0
+[   55.324651]  el0_svc+0x28/0x80
+[   55.324658]  el0t_64_sync_handler+0xa4/0x130
+[   55.324665]  el0t_64_sync+0x1a0/0x1a4
+[   55.324671] SMP: stopping secondary CPUs
+[   55.324677] Kernel Offset: disabled
+[   55.324678] CPU features: 0x00002001,00000842
+[   55.324681] Memory Limit: none
+[   55.582835] ---[ end Kernel panic - not syncing: Asynchronous SError Interrupt ]---
+
+```
+
+记录`modetest -M xlnx `输出
+
+```
+root@petalinux:~# modetest -M xlnx
+Encoders:
+id      crtc    type    possible crtcs  possible clones
+36      0       TMDS    0x00000001      0x00000001
+
+Connectors:
+id      encoder status          name            size (mm)       modes   encoders
+37      0       connected       unknown-1       0x0             64      36
+  modes:
+        index name refresh (Hz) hdisp hss hse htot vdisp vss vse vtot
+  #0 4096x2160 60.00 4096 4184 4272 4400 2160 2168 2178 2250 594000 flags: phsync, pvsync; type: driver
+  #1 4096x2160 59.94 4096 4184 4272 4400 2160 2168 2178 2250 593408 flags: phsync, pvsync; type: driver
+  #2 4096x2160 50.00 4096 5064 5152 5280 2160 2168 2178 2250 594000 flags: phsync, pvsync; type: driver
+  #3 4096x2160 48.00 4096 5116 5204 5500 2160 2168 2178 2250 594000 flags: phsync, pvsync; type: driver
+  #4 4096x2160 47.95 4096 5116 5204 5500 2160 2168 2178 2250 593406 flags: phsync, pvsync; type: driver
+  #5 4096x2160 30.00 4096 4184 4272 4400 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  #6 4096x2160 29.97 4096 4184 4272 4400 2160 2168 2178 2250 296704 flags: phsync, pvsync; type: driver
+  #7 4096x2160 25.00 4096 5064 5152 5280 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  #8 4096x2160 24.00 4096 5116 5204 5500 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  #9 4096x2160 23.98 4096 5116 5204 5500 2160 2168 2178 2250 296704 flags: phsync, pvsync; type: driver
+  #10 3840x2160 60.00 3840 4016 4104 4400 2160 2168 2178 2250 594000 flags: phsync, pvsync; type: driver
+  #11 3840x2160 59.94 3840 4016 4104 4400 2160 2168 2178 2250 593406 flags: phsync, pvsync; type: driver
+  #12 3840x2160 50.00 3840 4896 4984 5280 2160 2168 2178 2250 594000 flags: phsync, pvsync; type: driver
+  #13 3840x2160 48.00 3840 5116 5204 5500 2160 2168 2178 2250 594000 flags: phsync, pvsync; type: driver
+  #14 3840x2160 30.00 3840 4016 4104 4400 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  #15 3840x2160 29.97 3840 4016 4104 4400 2160 2168 2178 2250 296704 flags: phsync, pvsync; type: driver
+  #16 3840x2160 25.00 3840 4896 4984 5280 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  #17 3840x2160 24.00 3840 5116 5204 5500 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  #18 3840x2160 23.98 3840 5116 5204 5500 2160 2168 2178 2250 296704 flags: phsync, pvsync; type: driver
+  #19 2048x1080 120.00 2048 2136 2180 2200 1080 1084 1089 1125 297000 flags: phsync, pvsync; type: driver
+  #20 2048x1080 119.88 2048 2136 2180 2200 1080 1084 1089 1125 296703 flags: phsync, pvsync; type: driver
+  #21 2048x1080 100.00 2048 2448 2492 2640 1080 1084 1089 1125 297000 flags: phsync, pvsync; type: driver
+  #22 2048x1080 60.00 2048 2136 2180 2200 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  #23 2048x1080 50.00 2048 2448 2492 2640 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  #24 2048x1080 48.00 2048 2558 2602 2750 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  #25 2048x1080 30.00 2048 2114 2134 2200 1080 1084 1089 1125 74250 flags: phsync, pvsync; type: driver
+  #26 2048x1080 25.00 2048 2448 2492 2640 1080 1084 1089 1125 74250 flags: phsync, pvsync; type: driver
+  #27 2048x1080 24.00 2048 2558 2602 2750 1080 1084 1089 1125 74250 flags: phsync, pvsync; type: driver
+  #28 1920x1080 120.00 1920 2008 2052 2200 1080 1084 1089 1125 297000 flags: phsync, pvsync; type: driver
+  #29 1920x1080 119.88 1920 2008 2052 2200 1080 1084 1089 1125 296703 flags: phsync, pvsync; type: driver
+  #30 1920x1080 100.00 1920 2448 2492 2640 1080 1084 1089 1125 297000 flags: phsync, pvsync; type: driver
+  #31 1920x1080 60.00 1920 2008 2052 2200 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  #32 1920x1080 59.94 1920 2008 2052 2200 1080 1084 1089 1125 148350 flags: phsync, pvsync; type: driver
+  #33 1920x1080 50.00 1920 2448 2492 2640 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  #34 1920x1080 48.00 1920 2558 2602 2750 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  #35 1920x1080 30.00 1920 2008 2052 2200 1080 1084 1089 1125 74250 flags: phsync, pvsync; type: driver
+  #36 1920x1080 25.00 1920 2448 2492 2640 1080 1084 1089 1125 74250 flags: phsync, pvsync; type: driver
+  #37 1920x1080 24.00 1920 2558 2602 2750 1080 1084 1089 1125 74250 flags: phsync, pvsync; type: driver
+  #38 2048x1080i 60.00 2048 2114 2134 2200 540 1084 1094 1125 148500 flags: phsync, pvsync, interlace; type: driver
+  #39 2048x1080i 50.00 2048 2322 2366 2640 540 1084 1094 1125 148500 flags: phsync, pvsync, interlace; type: driver
+  #40 2048x1080i 48.00 2048 2377 2421 2750 540 1084 1094 1125 148500 flags: phsync, pvsync, interlace; type: driver
+  #41 2048x1080i 30.00 2048 2114 2134 2200 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace; type: driver
+  #42 2048x1080i 25.00 2048 2322 2366 2640 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace; type: driver
+  #43 2048x1080i 24.00 2048 2377 2421 2750 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace; type: driver
+  #44 2048x1080sf 30.00 2048 2114 2134 2200 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace, dblscan; type: driver
+  #45 2048x1080sf 25.00 2048 2322 2366 2640 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace, dblscan; type: driver
+  #46 2048x1080sf 24.00 2048 2377 2421 2750 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace, dblscan; type: driver
+  #47 1920x1080i 60.00 1920 2008 2052 2200 540 1084 1094 1125 148500 flags: phsync, pvsync, interlace; type: driver
+  #48 1920x1080i 50.00 1920 2448 2492 2640 540 1084 1094 1125 148500 flags: phsync, pvsync, interlace; type: driver
+  #49 1920x1080i 48.00 1920 2291 2379 2750 540 1084 1094 1125 148500 flags: phsync, pvsync, interlace; type: driver
+  #50 1920x1080i 30.00 1920 2008 2052 2200 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace; type: driver
+  #51 1920x1080i 29.97 1920 2008 2052 2200 540 1084 1094 1125 74175 flags: phsync, pvsync, interlace; type: driver
+  #52 1920x1080i 25.00 1920 2448 2492 2640 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace; type: driver
+  #53 1920x1080i 24.00 1920 2291 2379 2750 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace; type: driver
+  #54 1920x1080sf 30.00 1920 2008 2052 2200 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace, dblscan; type: driver
+  #55 1920x1080sf 25.00 1920 2448 2492 2640 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace, dblscan; type: driver
+  #56 1920x1080sf 24.00 1920 2291 2379 2750 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace, dblscan; type: driver
+  #57 1280x720 60.00 1280 1390 1430 1650 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  #58 1280x720 50.00 1280 1720 1760 1980 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  #59 1280x720 30.00 1280 2250 2330 3300 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  #60 1280x720 25.00 1280 2250 2990 3960 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  #61 1280x720 24.00 1280 2250 3155 4125 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  #62 720x576i 25.00 720 732 795 864 288 580 586 625 13500 flags: phsync, pvsync, interlace, dblclk; type: driver
+  #63 720x486i 29.97 720 739 801 858 243 494 500 525 13500 flags: phsync, pvsync, interlace, dblclk; type: driver
+  props:
+        1 EDID:
+                flags: immutable blob
+                blobs:
+
+                value:
+        2 DPMS:
+                flags: enum
+                enums: On=0 Standby=1 Suspend=2 Off=3
+                value: 3
+        5 link-status:
+                flags: enum
+                enums: Good=0 Bad=1
+                value: 0
+        6 non-desktop:
+                flags: immutable range
+                values: 0 1
+                value: 0
+        4 TILE:
+                flags: immutable blob
+                blobs:
+
+                value:
+        39 sdi_mode:
+                flags: range
+                values: 0 5
+                value: 0
+        40 sdi_data_stream:
+                flags: range
+                values: 2 8
+                value: 0
+        41 sdi_420_in:
+                flags: range
+                values: 0 1
+                value: 0
+        42 sdi_420_out:
+                flags: range
+                values: 0 1
+                value: 0
+        43 sdi_444_out:
+                flags: range
+                values: 0 1
+                value: 0
+        38 is_frac:
+                flags: range
+                values: 0 1
+                value: 0
+        44 height_out:
+                flags: range
+                values: 2 4096
+                value: 0
+        45 width_out:
+                flags: range
+                values: 2 4096
+                value: 0
+        46 in_fmt:
+                flags: range
+                values: 0 16384
+                value: 0
+        47 out_fmt:
+                flags: range
+                values: 0 16384
+                value: 0
+        48 en_st352_c:
+                flags: range
+                values: 0 1
+                value: 0
+        49 use_ds2_3ga:
+                flags: range
+                values: 0 1
+                value: 0
+        50 c_encoding:
+                flags: range
+                values: 0 1
+                value: 0
+        8 GEN_HDR_OUTPUT_METADATA:
+                flags: blob
+                blobs:
+
+                value:
+
+CRTCs:
+id      fb      pos     size
+33      0       (0,0)   (0x0)
+  #0  nan 0 0 0 0 0 0 0 0 0 flags: ; type: 
+  props:
+        25 VRR_ENABLED:
+                flags: range
+                values: 0 1
+                value: 0
+
+Planes:
+id      crtc    fb      CRTC x,y        x,y     gamma size      possible crtcs
+32      0       0       0,0             0,0     0               0x00000001
+  formats: XB24 XB30 XR24 XV24 VU24 XV30 YUYV UYVY NV16 NV12 XV15 XV20 BG24 GREY Y10  RG24 YU24 YU24
+  props:
+        9 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 1
+        34 fid_err:
+                flags: range
+                values: 0 1
+                value: 0
+        35 fid_out:
+                flags: range
+                values: 0 1
+                value: 0
+
+Frame buffers:
+id      size    pitch
+
+root@petalinux:~# devmem 0xa0040000
+0x00000000
+root@petalinux:~# cat /sys/kernel/debug/clk/clk_summary | grep -i sdi
+...
+root@petalinux:~# cat /sys/kernel/debug/clk/clk_summary | grep a0040000
+root@petalinux:~# devmem 0xa0040000 32 0x1
+root@petalinux:~# dmesg | grep xlnx-sdi
+root@petalinux:~# dmesg | grep sdi
+[    0.226713] platform amba_pl@0:drm-pl-disp-drvsdi_tx_output_v_smpte_uhdsdi_tx_ss: Fixing up cyclic dependency with a0040000.v_smpte_uhdsdi_tx_ss
+[   19.150610] xlnx-pl-disp amba_pl@0:drm-pl-disp-drvsdi_tx_output_v_smpte_uhdsdi_tx_ss: failed to request dma channel
+[   20.081720] xlnx-pl-disp amba_pl@0:drm-pl-disp-drvsdi_tx_output_v_smpte_uhdsdi_tx_ss: vtc bridge property not present
+[   20.092413] xlnx-pl-disp amba_pl@0:drm-pl-disp-drvsdi_tx_output_v_smpte_uhdsdi_tx_ss: Xlnx PL display driver probed
+[   20.150192] xlnx-drm xlnx-drm.0: bound amba_pl@0:drm-pl-disp-drvsdi_tx_output_v_smpte_uhdsdi_tx_ss (ops 0xffff800008e79c58)
+[   20.161350] xlnx-drm xlnx-drm.0: bound a0040000.v_smpte_uhdsdi_tx_ss (ops 0xffff800008e79ef0)
+[   20.169879] xlnx-pl-disp amba_pl@0:drm-pl-disp-drvsdi_tx_output_v_smpte_uhdsdi_tx_ss: fbdev is not initialized
+[   20.180093] [drm] Initialized xlnx 1.0.0 20130509 for amba_pl@0:drm-pl-disp-drvsdi_tx_output_v_smpte_uhdsdi_tx_ss on minor 0
+root@petalinux:~# ls /sys/bus/i2c/devices/1-0068/
+ls: cannot access '/sys/bus/i2c/devices/1-0068/': No such file or directory
+root@petalinux:~# ls /sys/bus/i2c/devices/
+1-007c  2-005e  i2c-0  i2c-1  i2c-2
+root@petalinux:~# ls /sys/bus/i2c/devices/1-007c/
+consumer:platform:a0040000.v_smpte_uhdsdi_tx_ss  driver  modalias  name  of_node  power  subsystem  uevent
+root@petalinux:~# cat /sys/kernel/debug/clk/clk_summary | grep idt
+```
+
+实际上, 官方的vuc_trd是用si570, 而我的是idt8t49n24x的port1
+
+```
+&sdi_tx_output_v_smpte_uhdsdi_tx_ss {
+    clock-names = "sdi_tx_clk", "video_in_clk", "s_axi_aclk";
+    clocks = <&idt8t49n24x 1>, <&zynqmp_clk 74>, <&zynqmp_clk 71>;
+    reset-gpio = <&axi_gpio_0 0 0 0>;
+    xlnx,qpll1_enabled = <0x1>;
+};
+```
+
+而LOL指示灯没有亮.  [实际上开机在Q1有频率, 只是LOL没有而已.]
+
+我觉得吧, 还是参考始终没有出现造成的吧......这就不得不吐槽用这个idt8t49n24x的设计太扯鸡巴蛋.....用固定的有源晶振多好啊.......
+
+i2c命令直接配置idt8t49n24x试试呢
+
+绑定了驱动, 不能直接用
+
+```
+root@petalinux:~# i2cdetect -y -a 1
+     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f
+00: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+10: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+20: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+30: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+40: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+50: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+60: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+70: -- -- -- -- -- -- -- -- -- -- -- -- UU -- -- -- 
+root@petalinux:~# i2ctransfer -y -a 1 w2@0x7c 0x00 0x00 r1
+Error: Could not set address to 0x7c: Device or resource busy
+Error: faulty argument is 'w2@0x7c'
+root@petalinux:~# i2ctransfer -y -a 1 w2@0x7c 0x00 0x00 r1
+Error: Could not set address to 0x7c: Device or resource busy
+Error: faulty argument is 'w2@0x7c'
+root@petalinux:~# i2ctransfer -y -a 1 w3@0x7c 0x00 0x00 0x09
+Error: Could not set address to 0x7c: Device or resource busy
+Error: faulty argument is 'w3@0x7c'
+```
+
+chatgtp给的解绑命令,也不行
+```
+readlink /sys/bus/i2c/devices/1-007c/driver
+echo 1-007c > /sys/bus/i2c/drivers/<driver_name>/unbind
+```
+
+查到可以用force参数访问
+
+```
+root@petalinux:~# i2ctransfer -y -a -f 1 w2@0x7c 0x00 0x00 r1                                                                 
+0x09
+```
+
+那么就给出配置序列
+
+```
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x00 0x09
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x01 0x50
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x02 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x03 0x60
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x04 0x60
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x05 0x01
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x06 0x7c
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x07 0x01
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x08 0x03
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x09 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0a 0x31
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0c 0x02
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0d 0x45
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x10 0x01
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x11 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x12 0x63
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x13 0xdc
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x14 0x07
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x15 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x16 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x17 0x77
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x18 0x6d
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x19 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x1a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x1b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x1c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x1d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x1e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x1f 0xff
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x20 0xff
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x21 0xff
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x22 0xff
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x23 0x03
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x24 0x3f
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x25 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x26 0x28
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x27 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x28 0x10
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x29 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x2a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x2b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x2c 0x01
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x2d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x2e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x2f 0xd0
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x30 0x08
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x31 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x32 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x33 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x34 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x35 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x36 0x08
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x37 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x38 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x39 0x0f
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x3a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x3b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x3c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x3d 0x44
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x3e 0x44
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x3f 0x01
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x40 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x41 0x01
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x42 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x43 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x44 0x0a
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x45 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x46 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x47 0x0a
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x48 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x49 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x4a 0x0a
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x4b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x4c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x4d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x4e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x4f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x50 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x51 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x52 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x53 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x54 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x55 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x56 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x57 0x0e
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x58 0x8b
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x59 0xa2
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x5a 0xe9
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x5b 0x0e
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x5c 0x8b
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x5d 0xa2
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x5e 0xe9
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x5f 0x0e
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x60 0x8b
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x61 0xa2
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x62 0xe9
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x63 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x64 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x65 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x66 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x67 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x68 0xe2
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x69 0x0a
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x6a 0x2b
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x6b 0x20
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x6c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x6d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x6e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x6f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x70 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x71 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x72 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x73 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x74 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x75 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x76 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x77 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x78 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x79 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x7a 0x27
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x7b 0xcc
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x7c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x7d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x7e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x7f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x80 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x81 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x82 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x83 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x84 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x85 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x86 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x87 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x88 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x89 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x8a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x8b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x8c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x8d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x8e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x8f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x90 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x91 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x92 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x93 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x94 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x95 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x96 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x97 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x98 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x99 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x9a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x9b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x9c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x9d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x9e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x9f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xa0 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xa1 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xa2 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xa3 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xa4 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xa5 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xa6 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xa7 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xa8 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xa9 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xaa 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xab 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xac 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xad 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xae 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xaf 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xb0 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xb1 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xb2 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xb3 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xb4 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xb5 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xb6 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xb7 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xb8 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xb9 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xba 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xbb 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xbc 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xbd 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xbe 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xbf 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xc0 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xc1 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xc2 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xc3 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xc4 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xc5 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xc6 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xc7 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xc8 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xc9 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xca 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xcb 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xcc 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xcd 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xce 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xcf 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xd0 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xd1 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xd2 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xd3 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xd4 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xd5 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xd6 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xd7 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xd8 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xd9 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xda 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xdb 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xdc 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xdd 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xde 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xdf 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xe0 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xe1 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xe2 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xe3 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xe4 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xe5 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xe6 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xe7 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xe8 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xe9 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xea 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xeb 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xec 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xed 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xee 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xef 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xf0 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xf1 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xf2 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xf3 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xf4 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xf5 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xf6 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xf7 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xf8 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xf9 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xfa 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xfb 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xfc 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xfd 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xfe 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0xff 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x00 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x01 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x02 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x03 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x04 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x05 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x06 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x07 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x08 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x09 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x0a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x0b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x0c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x0d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x0e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x0f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x10 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x11 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x12 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x13 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x14 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x15 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x16 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x17 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x18 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x19 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x1a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x1b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x1c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x1d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x1e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x1f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x20 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x21 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x22 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x23 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x24 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x25 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x26 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x27 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x28 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x29 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x2a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x2b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x2c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x2d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x2e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x2f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x30 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x31 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x32 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x33 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x34 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x35 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x36 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x37 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x38 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x39 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x3a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x3b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x3c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x3d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x3e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x3f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x40 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x41 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x42 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x43 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x44 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x45 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x46 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x47 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x48 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x49 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x4a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x4b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x4c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x4d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x4e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x4f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x50 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x51 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x52 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x53 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x54 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x55 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x56 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x57 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x58 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x59 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x5a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x5b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x5c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x5d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x5e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x5f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x60 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x61 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x62 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x63 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x64 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x65 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x66 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x67 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x68 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x69 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x6a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x6b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x6c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x6d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x6e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x6f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x70 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x71 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x72 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x73 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x74 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x75 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x76 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x77 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x78 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x79 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x7a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x7b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x7c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x7d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x7e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x7f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x80 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x81 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x82 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x83 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x84 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x85 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x86 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x87 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x88 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x89 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x8a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x8b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x8c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x8d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x8e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x8f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x90 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x91 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x92 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x93 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x94 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x95 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x96 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x97 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x98 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x99 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x9a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x9b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x9c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x9d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x9e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0x9f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xa0 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xa1 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xa2 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xa3 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xa4 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xa5 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xa6 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xa7 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xa8 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xa9 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xaa 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xab 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xac 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xad 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xae 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xaf 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xb0 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xb1 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xb2 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xb3 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xb4 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xb5 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xb6 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xb7 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xb8 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xb9 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xba 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xbb 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xbc 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xbd 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xbe 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xbf 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xc0 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xc1 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xc2 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xc3 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xc4 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xc5 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xc6 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xc7 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xc8 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xc9 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xca 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xcb 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xcc 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xcd 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xce 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xcf 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xd0 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xd1 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xd2 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xd3 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xd4 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xd5 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xd6 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xd7 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xd8 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xd9 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xda 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xdb 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xdc 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xdd 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xde 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xdf 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xe0 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xe1 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xe2 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xe3 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xe4 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xe5 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xe6 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xe7 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xe8 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xe9 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xea 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xeb 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xec 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xed 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xee 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xef 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xf0 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xf1 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xf2 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xf3 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xf4 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xf5 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xf6 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xf7 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xf8 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xf9 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xfa 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xfb 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xfc 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xfd 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xfe 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x01 0xff 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x00 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x01 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x02 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x03 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x04 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x05 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x06 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x07 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x08 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x09 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x0a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x0b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x0c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x0d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x0e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x0f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x10 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x11 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x12 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x13 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x14 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x15 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x16 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x17 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x18 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x19 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x1a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x1b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x1c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x1d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x1e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x1f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x20 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x21 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x22 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x23 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x24 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x25 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x26 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x27 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x28 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x29 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x2a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x2b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x2c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x2d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x2e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x2f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x30 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x31 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x32 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x33 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x34 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x35 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x36 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x37 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x38 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x39 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x3a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x3b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x3c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x3d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x3e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x3f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x40 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x41 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x42 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x43 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x44 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x45 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x46 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x47 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x48 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x49 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x4a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x4b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x4c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x4d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x4e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x4f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x50 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x51 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x52 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x53 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x54 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x55 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x56 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x57 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x58 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x59 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x5a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x5b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x5c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x5d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x5e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x5f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x60 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x61 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x62 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x63 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x64 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x65 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x66 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x67 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x68 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x69 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x6a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x6b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x6c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x6d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x6e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x6f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x70 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x71 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x72 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x73 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x74 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x75 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x76 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x77 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x78 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x79 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x7a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x7b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x7c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x7d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x7e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x7f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x80 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x81 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x82 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x83 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x84 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x85 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x86 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x87 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x88 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x89 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x8a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x8b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x8c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x8d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x8e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x8f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x90 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x91 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x92 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x93 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x94 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x95 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x96 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x97 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x98 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x99 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x9a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x9b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x9c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x9d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x9e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0x9f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xa0 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xa1 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xa2 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xa3 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xa4 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xa5 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xa6 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xa7 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xa8 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xa9 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xaa 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xab 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xac 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xad 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xae 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xaf 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xb0 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xb1 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xb2 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xb3 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xb4 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xb5 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xb6 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xb7 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xb8 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xb9 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xba 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xbb 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xbc 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xbd 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xbe 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xbf 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xc0 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xc1 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xc2 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xc3 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xc4 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xc5 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xc6 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xc7 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xc8 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xc9 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xca 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xcb 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xcc 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xcd 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xce 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xcf 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xd0 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xd1 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xd2 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xd3 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xd4 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xd5 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xd6 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xd7 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xd8 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xd9 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xda 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xdb 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xdc 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xdd 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xde 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xdf 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xe0 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xe1 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xe2 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xe3 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xe4 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xe5 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xe6 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xe7 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xe8 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xe9 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xea 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xeb 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xec 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xed 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xee 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xef 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xf0 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xf1 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xf2 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xf3 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xf4 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xf5 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xf6 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xf7 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xf8 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xf9 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xfa 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xfb 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xfc 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xfd 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xfe 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x02 0xff 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x00 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x01 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x02 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x03 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x04 0x85
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x05 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x06 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x07 0x9c
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x08 0x01
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x09 0xd4
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x0a 0x02
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x0b 0x71
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x0c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x0d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x0e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x0f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x10 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x11 0x83
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x12 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x13 0x10
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x14 0x02
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x15 0x08
+i2ctransfer -y -a -f 1 w3@0x7c 0x03 0x16 0x8c
+```
+
+上面的用示波器看确实输出了频率(至少能看到Q1,Q2,Q3)
+
+
+
+dts里把idt8t49n24x的驱动给`status = "disabled";`  [ 其实没有必要, 用镊子复位idt这个器件更方便 ]
+
+并且提取裸机配置序列, 作为一个脚本. 下面的Q1出148.5MHz
+
+```
+#!/bin/sh
+
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x70 0x05
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x08 0x03
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x09 0x09
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0a 0x20
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0c 0x04
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0d 0x89
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x10 0x01
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x11 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x12 0x63
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x13 0xc6
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x14 0x07
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x15 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x16 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x17 0x77
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x18 0x6d
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x19 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x1a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x1b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x1c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x1d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x1e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x1f 0xff
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x20 0xff
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x21 0xff
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x22 0xff
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x23 0x01
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x24 0x3f
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x25 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x26 0x28
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x27 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x28 0x1a
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x29 0xcc
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x2a 0xcd
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x2b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x2c 0x01
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x2d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x2e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x2f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x30 0x08
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x31 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x32 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x33 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x34 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x35 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x36 0x08
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x37 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x38 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x39 0x0c
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x3a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x3b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x3c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x3d 0x44
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x3e 0x44
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x3f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x40 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x41 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x42 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x43 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x44 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x45 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x46 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x47 0x0b
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x48 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x49 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x4a 0x0b
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x4b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x4c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x4d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x4e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x4f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x50 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x51 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x52 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x53 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x54 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x55 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x56 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x57 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x58 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x59 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x5a 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x5b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x5c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x5d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x5e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x5f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x60 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x61 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x62 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x63 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x64 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x65 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x66 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x67 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x68 0x89
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x69 0x02
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x6a 0x2b
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x6b 0x20
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x6c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x6d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x6e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x6f 0x03
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x71 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x72 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x73 0x06
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x74 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x75 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x76 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x77 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x78 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x79 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x7a 0x27
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x7b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x7c 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x7d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x7e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x7f 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x80 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x81 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x82 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x83 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x70 0x00
+
+sleep 0.1
+
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x70 0x05
+
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0a 0x20
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0a 0x20
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0a 0x20
+
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x69 0x02
+
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0b 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0c 0x01
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0d 0x38
+
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x0f 0x01
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x10 0x38
+
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x14 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x15 0x62
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x16 0xb8
+
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x11 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x12 0x62
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x13 0xb8
+
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x25 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x26 0x28
+
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x28 0x1a
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x29 0xcc
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x2a 0xcc
+
+
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x39 0x0c
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x3e 0x40
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x6f 0x03
+
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x39 0x0c
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x3e 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x6f 0x03
+
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x39 0x08
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x3d 0x40
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x6f 0x07
+
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x39 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x3d 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x6f 0x0f
+
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x42 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x43 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x44 0x0b
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x57 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x58 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x59 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x5a 0x00
+
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x39 0x02
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x3e 0x40
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x6f 0x0d
+
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x71 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x72 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x73 0x0d
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x74 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x75 0x00
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x76 0x0d
+
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x70 0x00
+
+i2ctransfer -y -a -f 1 w2@0x7c 0x00 0x70 r1;
+
+
+
+```
+
+基本排除PLL输出的参考时钟问题, Q1上的148.5MHz, LOL也是有的.
+
+那么, 再去掉`tpg_input`模块, 看看是不是去掉vtc会好一些 [不行, 还是崩了]
+
+
+
+
+
+
+
+
+
+## `sditx`能显示了
+
+先分析代码`linux-xlnx/drivers/gpu/drm/xlnx/xlnx_sdi.c`. 搜索`reset`, 显然, `dts`应该用`phy-reset-gpio`. 先给一个通过`ila`监测`phy-reset-gpio = <&axi_gpio_0 0 1>`是否是拉低, 根据裸机, 这个`fmc_init_done`信号应是上升沿并正常状态是高, 也就是复位低有效
+
+文档在`Documentation/devicetree/bindings/display/xlnx/xlnx,sdi-tx.txt`
+
+
+
+```
+&sdi_tx_output_v_smpte_uhdsdi_tx_ss {
+    clock-names = "sdi_tx_clk", "video_in_clk", "s_axi_aclk";
+    clocks = <&idt8t49n24x 1>, <&zynqmp_clk 74>, <&zynqmp_clk 71>;
+    phy-reset-gpio = <&axi_gpio_0 0 1>;
+    xlnx,qpll1_enabled = <0x1>;
+};
+```
+
+基本符合裸机观察到的
+
+```
+fmc_init_done 会拉高
+si5324_lol 保持低, si5324_lol_db 仅对 si5324_lol 延迟一些拍
+qpll0reset和qpll0reset都会发出一次高脉冲
+txclk是270Mhz
+gt_cmn_qpll0lock 和 gt_cmn_qpll1lock 都是高
+
+```
+
+除了`txclk`是`74.25Mhz`
+
+这里再怀疑一下`qpll1_enabled`这个, 去掉看看. 好像没有作用`txclk`还是`74.25Mhz`
+
+
+
+再读<https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/18841950/Xilinx+DRM+KMS+SDI-Tx+Driver>
+
+```
+modetest -M xlnx -s 37:3840x2160-60@XV20 -w 37:sdi_mode:5 -w 37:sdi_data_stream:8 -w 37:is_frac:0
+modetest -M xlnx -s 37:3840x2160-60@YUYV -w 37:sdi_mode:5 -w 37:sdi_data_stream:8 -w 37:is_frac:0
+modetest -M xlnx -s 37:3840x2160-60@UYVY -w 37:sdi_mode:5 -w 37:sdi_data_stream:8 -w 37:is_frac:0
+```
+
+可以显示, `txclk`是`297Mhz`
+
+但是如果尝试显示tpg
+
+```
+如果不接摄像头, 这样显示`tpg`
+
+media-ctl -d /dev/media0 -p
+media-ctl -v -d /dev/media0 -V "\"a0140000.v_tpg\":0 [fmt:UYVY8_1X16/3840x2160@1/60 field:none]" 
+media-ctl -d /dev/media0 -p
+
+# 不一定每次都能显示, 反正显示之后转后台运行
+modetest -M xlnx -s 37:3840x2160-60@UYVY -w 37:sdi_mode:5 -w 37:sdi_data_stream:8 -w 37:is_frac:0 &		
+
+# 无用
+echo N > /sys/module/xlnx_mixer/parameters/mixer_primary_enable 
+
+gst-launch-1.0 -v \
+v4l2src device=/dev/video0 io-mode=5 do-timestamp=true ! \
+video/x-raw,format=UYVY,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=32 sync=false fullscreen-overlay=0
+
+
+# 下面命令不刷新
+
+v4l2-ctl -d /dev/video0 --set-ctrl=test_pattern=8
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_foreground_patter=1
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_motion_speed=1
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_box_size=50
+
+
+
+#
+
+gst-launch-1.0 -v \
+v4l2src device=/dev/video0 io-mode=5 do-timestamp=true ! \
+video/x-raw,format=UYVY,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=32 sync=false
+
+
+#
+
+gst-launch-1.0 -v \
+v4l2src device=/dev/video0 io-mode=5 do-timestamp=true ! \
+video/x-raw,format=UYVY,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=32 sync=false fullscreen-overlay=1
+
+
+
+
+gst-launch-1.0 -v \
+v4l2src device=/dev/video0 io-mode=0 do-timestamp=true ! \
+video/x-raw,format=UYVY,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=32 sync=false
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+更换v_mix之后
+
+```
+root@petalinux:~# modetest -M xlnx
+Encoders:
+id      crtc    type    possible crtcs  possible clones
+40      39      TMDS    0x00000001      0x00000001
+
+Connectors:
+id      encoder status          name            size (mm)       modes   encoders
+41      40      connected       unknown-1       0x0             54      40
+  modes:
+        index name refresh (Hz) hdisp hss hse htot vdisp vss vse vtot
+  #0 3840x2160 60.00 3840 4016 4104 4400 2160 2168 2178 2250 594000 flags: phsync, pvsync; type: driver
+  #1 3840x2160 59.94 3840 4016 4104 4400 2160 2168 2178 2250 593406 flags: phsync, pvsync; type: driver
+  #2 3840x2160 50.00 3840 4896 4984 5280 2160 2168 2178 2250 594000 flags: phsync, pvsync; type: driver
+  #3 3840x2160 48.00 3840 5116 5204 5500 2160 2168 2178 2250 594000 flags: phsync, pvsync; type: driver
+  #4 3840x2160 30.00 3840 4016 4104 4400 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  #5 3840x2160 29.97 3840 4016 4104 4400 2160 2168 2178 2250 296704 flags: phsync, pvsync; type: driver
+  #6 3840x2160 25.00 3840 4896 4984 5280 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  #7 3840x2160 24.00 3840 5116 5204 5500 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  #8 3840x2160 23.98 3840 5116 5204 5500 2160 2168 2178 2250 296704 flags: phsync, pvsync; type: driver
+  #9 2048x1080 120.00 2048 2136 2180 2200 1080 1084 1089 1125 297000 flags: phsync, pvsync; type: driver
+  #10 2048x1080 119.88 2048 2136 2180 2200 1080 1084 1089 1125 296703 flags: phsync, pvsync; type: driver
+  #11 2048x1080 100.00 2048 2448 2492 2640 1080 1084 1089 1125 297000 flags: phsync, pvsync; type: driver
+  #12 2048x1080 60.00 2048 2136 2180 2200 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  #13 2048x1080 50.00 2048 2448 2492 2640 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  #14 2048x1080 48.00 2048 2558 2602 2750 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  #15 2048x1080 30.00 2048 2114 2134 2200 1080 1084 1089 1125 74250 flags: phsync, pvsync; type: driver
+  #16 2048x1080 25.00 2048 2448 2492 2640 1080 1084 1089 1125 74250 flags: phsync, pvsync; type: driver
+  #17 2048x1080 24.00 2048 2558 2602 2750 1080 1084 1089 1125 74250 flags: phsync, pvsync; type: driver
+  #18 1920x1080 120.00 1920 2008 2052 2200 1080 1084 1089 1125 297000 flags: phsync, pvsync; type: driver
+  #19 1920x1080 119.88 1920 2008 2052 2200 1080 1084 1089 1125 296703 flags: phsync, pvsync; type: driver
+  #20 1920x1080 100.00 1920 2448 2492 2640 1080 1084 1089 1125 297000 flags: phsync, pvsync; type: driver
+  #21 1920x1080 60.00 1920 2008 2052 2200 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  #22 1920x1080 59.94 1920 2008 2052 2200 1080 1084 1089 1125 148350 flags: phsync, pvsync; type: driver
+  #23 1920x1080 50.00 1920 2448 2492 2640 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  #24 1920x1080 48.00 1920 2558 2602 2750 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  #25 1920x1080 30.00 1920 2008 2052 2200 1080 1084 1089 1125 74250 flags: phsync, pvsync; type: driver
+  #26 1920x1080 25.00 1920 2448 2492 2640 1080 1084 1089 1125 74250 flags: phsync, pvsync; type: driver
+  #27 1920x1080 24.00 1920 2558 2602 2750 1080 1084 1089 1125 74250 flags: phsync, pvsync; type: driver
+  #28 2048x1080i 60.00 2048 2114 2134 2200 540 1084 1094 1125 148500 flags: phsync, pvsync, interlace; type: driver
+  #29 2048x1080i 50.00 2048 2322 2366 2640 540 1084 1094 1125 148500 flags: phsync, pvsync, interlace; type: driver
+  #30 2048x1080i 48.00 2048 2377 2421 2750 540 1084 1094 1125 148500 flags: phsync, pvsync, interlace; type: driver
+  #31 2048x1080i 30.00 2048 2114 2134 2200 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace; type: driver
+  #32 2048x1080i 25.00 2048 2322 2366 2640 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace; type: driver
+  #33 2048x1080i 24.00 2048 2377 2421 2750 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace; type: driver
+  #34 2048x1080sf 30.00 2048 2114 2134 2200 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace, dblscan; type: driver
+  #35 2048x1080sf 25.00 2048 2322 2366 2640 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace, dblscan; type: driver
+  #36 2048x1080sf 24.00 2048 2377 2421 2750 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace, dblscan; type: driver
+  #37 1920x1080i 60.00 1920 2008 2052 2200 540 1084 1094 1125 148500 flags: phsync, pvsync, interlace; type: driver
+  #38 1920x1080i 50.00 1920 2448 2492 2640 540 1084 1094 1125 148500 flags: phsync, pvsync, interlace; type: driver
+  #39 1920x1080i 48.00 1920 2291 2379 2750 540 1084 1094 1125 148500 flags: phsync, pvsync, interlace; type: driver
+  #40 1920x1080i 30.00 1920 2008 2052 2200 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace; type: driver
+  #41 1920x1080i 29.97 1920 2008 2052 2200 540 1084 1094 1125 74175 flags: phsync, pvsync, interlace; type: driver
+  #42 1920x1080i 25.00 1920 2448 2492 2640 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace; type: driver
+  #43 1920x1080i 24.00 1920 2291 2379 2750 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace; type: driver
+  #44 1920x1080sf 30.00 1920 2008 2052 2200 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace, dblscan; type: driver
+  #45 1920x1080sf 25.00 1920 2448 2492 2640 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace, dblscan; type: driver
+  #46 1920x1080sf 24.00 1920 2291 2379 2750 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace, dblscan; type: driver
+  #47 1280x720 60.00 1280 1390 1430 1650 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  #48 1280x720 50.00 1280 1720 1760 1980 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  #49 1280x720 30.00 1280 2250 2330 3300 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  #50 1280x720 25.00 1280 2250 2990 3960 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  #51 1280x720 24.00 1280 2250 3155 4125 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  #52 720x576i 25.00 720 732 795 864 288 580 586 625 13500 flags: phsync, pvsync, interlace, dblclk; type: driver
+  #53 720x486i 29.97 720 739 801 858 243 494 500 525 13500 flags: phsync, pvsync, interlace, dblclk; type: driver
+  props:
+        1 EDID:
+                flags: immutable blob
+                blobs:
+
+                value:
+        2 DPMS:
+                flags: enum
+                enums: On=0 Standby=1 Suspend=2 Off=3
+                value: 0
+        5 link-status:
+                flags: enum
+                enums: Good=0 Bad=1
+                value: 0
+        6 non-desktop:
+                flags: immutable range
+                values: 0 1
+                value: 0
+        4 TILE:
+                flags: immutable blob
+                blobs:
+
+                value:
+        43 sdi_mode:
+                flags: range
+                values: 0 5
+                value: 0
+        44 sdi_data_stream:
+                flags: range
+                values: 2 8
+                value: 0
+        45 sdi_420_in:
+                flags: range
+                values: 0 1
+                value: 0
+        46 sdi_420_out:
+                flags: range
+                values: 0 1
+                value: 0
+        47 sdi_444_out:
+                flags: range
+                values: 0 1
+                value: 0
+        42 is_frac:
+                flags: range
+                values: 0 1
+                value: 0
+        48 height_out:
+                flags: range
+                values: 2 4096
+                value: 0
+        49 width_out:
+                flags: range
+                values: 2 4096
+                value: 0
+        50 in_fmt:
+                flags: range
+                values: 0 16384
+                value: 0
+        51 out_fmt:
+                flags: range
+                values: 0 16384
+                value: 0
+        52 en_st352_c:
+                flags: range
+                values: 0 1
+                value: 0
+        53 use_ds2_3ga:
+                flags: range
+                values: 0 1
+                value: 0
+        54 c_encoding:
+                flags: range
+                values: 0 1
+                value: 0
+        8 GEN_HDR_OUTPUT_METADATA:
+                flags: blob
+                blobs:
+
+                value:
+
+CRTCs:
+id      fb      pos     size
+39      55      (0,0)   (3840x2160)
+  #0 3840x2160 60.00 3840 4016 4104 4400 2160 2168 2178 2250 594000 flags: phsync, pvsync; type: driver
+  props:
+        25 VRR_ENABLED:
+                flags: range
+                values: 0 1
+                value: 0
+
+Planes:
+id      crtc    fb      CRTC x,y        x,y     gamma size      possible crtcs
+34      0       0       0,0             0,0     0               0x00000001
+  formats: NV12
+  props:
+        9 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 0
+35      0       0       0,0             0,0     0               0x00000001
+  formats: YUYV
+  props:
+        9 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 0
+36      0       0       0,0             0,0     0               0x00000001
+  formats: UYVY
+  props:
+        9 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 0
+37      39      55      0,0             0,0     0               0x00000001
+  formats: AR24
+  props:
+        9 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 1
+        33 alpha:
+                flags: range
+                values: 0 256
+                value: 256
+38      0       0       0,0             0,0     0               0x00000001
+  formats: BG24
+  props:
+        9 type:
+                flags: immutable enum
+                enums: Overlay=0 Primary=1 Cursor=2
+                value: 0
+
+Frame buffers:
+id      size    pitch
+
+
+
+
+
+```
+
+
+
+`047aede5@sdi_txss_only_v_mix`
+
+`killall Xorg`之后, 显示的色彩空间不对, 分辨率不对, 然后`modetest -M xlnx`就`failed to open device 'xlnx'`
+
+但是可以`modetest -D a0060000.v_mix`
+
+```
+killall Xorg
+kill -9 [xinit id]
+
+modetest -D a0060000.v_mix -s 41:3840x2160-60@AR24 -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0
+
+modetest -D a0060000.v_mix -s 41@39:3840x2160-60 -P 36@39:3840x2160@UYVY -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0
+
+
+
+
+
+
+root@petalinux:~# modetest -D a0060000.v_mix -s 41:3840x2160-60@AR24
+trying to open device 'i915'...done
+setting mode 3840x2160-60.00Hz on connectors 41, crtc 39
+[  731.175737] xlnx-sdi-tx a0040000.v_smpte_uhdsdi_tx_ss: clkrate = 148500000 is_frac = 0
+[  731.297940] xlnx_sdi_irq_handler: 3270 callbacks suppressed
+[  731.297963] xlnx-sdi-tx a0040000.v_smpte_uhdsdi_tx_ss: AXI-4 Stream Underflow error
+[  731.311189] xlnx-sdi-tx a0040000.v_smpte_uhdsdi_tx_ss: AXI-4 Stream Underflow error
+[  731.318851] xlnx-sdi-tx a0040000.v_smpte_uhdsdi_tx_ss: AXI-4 Stream Underflow error
+[  731.326517] xlnx-sdi-tx a0040000.v_smpte_uhdsdi_tx_ss: AXI-4 Stream Underflow error
+
+
+
+
+
+root@petalinux:~# modetest -D a0060000.v_mix -s 41:3840x2160-60@AR24 -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0 
+trying to open device 'i915'...done
+setting mode 3840x2160-60.00Hz on connectors 41, crtc 39
+
+
+
+
+
+
+
+# 没接摄像头是这样
+media-ctl -d /dev/media0 -p
+media-ctl -v -d /dev/media0 -V "\"a0140000.v_tpg\":0 [fmt:UYVY8_1X16/3840x2160@1/60 field:none]" 
+media-ctl -d /dev/media0 -p
+
+
+
+gst-launch-1.0 -v \
+v4l2src device=/dev/video1 io-mode=5 do-timestamp=true ! \
+video/x-raw,format=UYVY,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink bus-id=a0060000.v_mix plane-id=36 sync=false fullscreen-overlay=0
+
+
+
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern=8
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_foreground_patter=1
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_motion_speed=1
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_box_size=50
+
+
+```
+
+
+
+## `stream`层改成`yuv422`
+
+接下来, 修改`v_mix`的`stream`层的色彩格式定义, 比如改成`yuv422`
+
+```
+
+killall Xorg
+x11显示了, 分辨率不对
+
+modetest -D a0060000.v_mix -s 41:3840x2160-60@AR24 -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0
+
+
+killall Xorg
+x11没有显示出来
+
+
+
+modetest -D a0060000.v_mix -s 41@39:3840x2160-60 -P 36@39:3840x2160@UYVY -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0
+
+modetest -D a0060000.v_mix -P 35@39:800x600+1000+100@YUYV &      # 显示个小窗口
+modetest -D a0060000.v_mix -P 36@39:800x600+1000+800@UYVY &      # 再显示个小窗口
+modetest -D a0060000.v_mix -P 34@39:800x600+1000+1500@NV12 &     # 再显示个小窗口
+
+
+
+
+
+```
+
+
+
+
+
+## 基于`eglfs_kms`运行`QT`应用程序
+
+不使用x11而显示qt节面的尝试
+
+```
+modetest -D a0060000.v_mix -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0
+
+
+modetest -M xlnx -s 41:3840x2160-60@AR24 -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0
+
+modetest -D a0060000.v_mix -s 41:3840x2160-60@AR24 -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0
+
+
+
+
+xinit /etc/X11/xinit/xinitrc -- /usr/bin/X :1 &
+
+modetest -D a0060000.v_mix -s 41:3840x2160-60@AR24 -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0
+
+export DISPLAY=:1
+cd /run/media/sda1/
+./qt_button_on_ar24_layer
+
+
+
+
+
+
+
+
+
+root@petalinux:/media/card# cat qt_kms.json 
+{
+  "device": "/dev/dri/card0",
+  "outputs": [
+    {
+      "name": "HDMI-A-1",
+      "mode": "3840x2160",
+      "format": "argb8888"
+    }
+  ],
+  "planes": [
+    {
+      "planeId": 37,
+      "zpos": 1
+    }
+  ]
+}
+root@petalinux:/media/card# export QT_QPA_EGLFS_KMS_CONFIG=/etc/qt_kms.json
+root@petalinux:/media/card# 
+root@petalinux:/media/card# modetest -D a0060000.v_mix -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0
+trying to open device 'i915'...done
+root@petalinux:/media/card# export QT_QPA_PLATFORM=eglfs
+root@petalinux:/media/card# export QT_QPA_EGLFS_INTEGRATION=eglfs_kms
+root@petalinux:/media/card# export DISPLAY=
+root@petalinux:/media/card# ./qt_button_on_ar24_layer
+qt.qpa.eglfs.kms: Could not open config file "/etc/qt_kms.json" for reading
+Could not initialize egl displ[ 1245.875207] audit: type=1701 audit(1637343591.520:6): auid=4294967295 uid=0 gid=0 ses=4294967295 pid=1229 comm="qt_button_on_ar" exe="/media/card/qt_button_1
+ay
+Aborted
+
+
+
+
+
+
+
+
+
+root@petalinux:/media/card# cat /etc/qt_kms.json                                                                                                                                              
+{
+  "device": "/dev/dri/card0",
+  "outputs": [
+    {
+      "name": "unknown-1",
+      "mode": "3840x2160",
+      "format": "argb8888"
+    }
+  ],
+  "planes": [
+    {
+      "planeId": 37,
+      "zpos": 1
+    }
+  ]
+}
+root@petalinux:/media/card# modetest -M xlnx -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0
+failed to open device 'xlnx': No such file or directory
+root@petalinux:/media/card# modetest -D a0060000.v_mix -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0
+trying to open device 'i915'...done
+root@petalinux:/media/card# export QT_QPA_EGLFS_KMS_CONFIG=/etc/qt_kms.json
+root@petalinux:/media/card# export QT_QPA_PLATFORM=eglfs
+root@petalinux:/media/card# export QT_QPA_EGLFS_INTEGRATION=eglfs_kms
+root@petalinux:/media/card# export DISPLAY=
+root@petalinux:/media/card# ./qt_button_on_ar24_layer 
+Could not initialize egl display
+[ 1420.701395] audit: type=1701 audit(1637343766.344:7): auid=4294967295 uid=0 gid=0 ses=4294967295 pid=1248 comm="qt_button_on_ar" exe="/media/card/qt_button_on_ar24_layer" sig=6 res=1
+Aborted
+
+
+
+
+
+
+root@petalinux:/media/card# ls /usr/lib | grep -i egl
+libEGL.so.1
+libEGL.so.1.4
+libQt5EglFSDeviceIntegration.so.5
+libQt5EglFSDeviceIntegration.so.5.15
+libQt5EglFSDeviceIntegration.so.5.15.2
+libQt5EglFsKmsSupport.so.5
+libQt5EglFsKmsSupport.so.5.15
+libQt5EglFsKmsSupport.so.5.15.2
+libwayland-egl.so.1
+libwayland-egl.so.1.0.0
+root@petalinux:/media/card# ls /usr/lib | grep -i gbm
+libgbm.so.1
+root@petalinux:/media/card# 
+root@petalinux:/media/card# ldd ./qt_button_on_ar24_layer | grep -i egl
+
+
+
+
+
+root@petalinux:/media/card# export QT_LOGGING_RULES="qt.qpa.*=true"
+root@petalinux:/media/card# ./qt_button_on_ar24_layer
+qt.qpa.egldeviceintegration: EGL device integration plugin keys: ("eglfs_emu", "eglfs_kms", "eglfs_mali", "eglfs_x11")
+[ 1650.252691] audit: type=1701 audit(1637343995.896:9): auid=4294967295 uid=0 gid=0 ses=4294967295 pid=1279 comm="qt_button_on_ar" exe="/media/card/qt_button_on_ar24_layer" sig=6 res=1
+qt.qpa.egldeviceintegration: EGL device integration plugin keys (sorted): ("eglfs_kms", "eglfs_x11", "eglfs_emu", "eglfs_mali")
+qt.qpa.egldeviceintegration: Trying to load device EGL integration "eglfs_kms"
+qt.qpa.eglfs.kms: Loading KMS setup from "/etc/qt_kms.json"
+qt.qpa.eglfs.kms: Requested configuration (some settings may be ignored):
+        headless: false 
+        hwcursor: false 
+        pbuffers: true 
+        separateScreens: false 
+        virtualDesktopLayout: 0 
+        outputs: QMap(("Unknown-1", QMap(("format", QVariant(QString, "argb8888"))("mode", QVariant(QString, "3840x2160"))("name", QVariant(QString, "Unknown-1")))))
+qt.qpa.eglfs.kms: New DRM/KMS via GBM integration created
+qt.qpa.egldeviceintegration: Using EGL device integration "eglfs_kms"
+qt.qpa.eglfs.kms: platformInit: Opening DRM device
+qt.qpa.eglfs.kms: GBM: Using DRM device "/dev/dri/card0" specified in config file
+qt.qpa.eglfs.kms: Using backend-provided DRM device /dev/dri/card0
+qt.qpa.eglfs.kms: Creating GBM device for file descriptor 5 obtained from "/dev/dri/card0"
+qt.qpa.eglfs.kms: Initalizing event reader for device 0xaaaae07c08f0 fd 5
+qt.qpa.eglfs.kms: Querying EGLDisplay
+qt.qpa.eglfs.kms: Event reader thread: entering event loop
+qt.qpa.eglfs.kms: No eglGetPlatformDisplay for GBM, falling back to eglGetDisplay
+Could not initialize egl display
+Aborted
+
+
+
+
+
+你的 EGL 不支持 GBM（eglfs_kms 必需的能力）
+
+
+
+
+
+
+
+
+
+
+modetest -D a0060000.v_mix -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0
+modetest -D a0060000.v_mix -s 41:3840x2160-60@AR24 -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0
+
+
+
+
+
+
+
+
+
+
+root@petalinux:/run/media/sda1# modetest -D a0060000.v_mix -s 41:3840x2160-60@AR24 -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0
+trying to open device 'i915'...done
+root@petalinux:/run/media/sda1# unset DISPLAY
+root@petalinux:/run/media/sda1# ./drm_qt_demo 
+QGuiApplication::font(): no QGuiApplication instance and no appli[  171.699297] audit: type=1701 audit(1637342517.344:5): auid=4294967295 uid=0 gid=0 ses=4294967295 pid=1060 comm="drm_qt_de1
+cation font set.
+Segmentation fault
+
+
+```
+
+
+
+
+
+参考 <https://www.cnblogs.com/hankfu/p/14131732.html>
+
+```
+在文件project-spec/meta-user/conf/petalinuxbsp.conf里，增加下列行，可以使libMali.so.9.0指向到/usr/lib/wayland/libMali.so.9.0。
+
+MALI_BACKEND_DEFAULT = "wayland" 
+也可以在Linux运行的时侯，执行下列命令，使libMali.so.9.0指向到/usr/lib/wayland/libMali.so.9.0。
+
+update-alternatives --install /usr/lib/libMali.so.9.0 libmali /usr/lib/wayland/libMali.so.9.0 90
+```
+
+
+
+```
+# 如果需要
+killall Xorg
+kill -9 [xinit id]
+
+
+# 如果需要
+echo N > /sys/module/xlnx_mixer/parameters/mixer_primary_enable 
+
+echo Y > /sys/module/xlnx_mixer/parameters/mixer_primary_enable 
+
+modetest -D a0060000.v_mix -s 41:3840x2160-60@AR24 -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0
+
+# 如果需要
+modetest -D a0060000.v_mix -s 41@39:3840x2160-60 -P 36@39:3840x2160@UYVY -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0
+
+
+
+
+
+export QT_QPA_PLATFORM="eglfs"
+export QT_QPA_EGLFS_KMS_ATOMIC=1
+export QT_QPA_EGLFS_INTEGRATION="eglfs_kms"
+export QT_QPA_EGLFS_DEBUG="1"
+export QT_QPA_EGLFS_FORCE888=1
+
+root@petalinux:/media/card# cat /etc/qt_kms.json                                                                                                                                              
+{
+  "device": "/dev/dri/card0",
+  "outputs": [
+    {
+      "name": "unknown-1",
+      "mode": "3840x2160",
+      "format": "argb8888"
+    }
+  ],
+  "planes": [
+    {
+      "planeId": 37,
+      "zpos": 1
+    }
+  ]
+}
+
+export QT_QPA_EGLFS_KMS_CONFIG=/etc/qt_kms.json
+
+自带例子
+/usr/share/examples/opengl/cube/cube
+/usr/share/examples/opengl/textures/textures
+
+这样
+./qt_button_on_ar24_layer 也可以执行
+
+
+叠加到彩条上
+
+
+
+如果不接摄像头, 这样显示`tpg`
+
+media-ctl -d /dev/media0 -p
+media-ctl -v -d /dev/media0 -V "\"a0140000.v_tpg\":0 [fmt:UYVY8_1X16/3840x2160@1/60 field:none]" 
+media-ctl -d /dev/media0 -p
+
+
+
+gst-launch-1.0 -v \
+v4l2src device=/dev/video1 io-mode=5 do-timestamp=true ! \
+video/x-raw,format=UYVY,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink bus-id=a0060000.v_mix plane-id=36 sync=false fullscreen-overlay=0
+
+
+
+# v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern=8
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_foreground_patter=1
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_motion_speed=1
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_box_size=50
+
+
+
+```
+
+![2026-04-10_142239_142](/home/andy/workdir/zirui/04_hdmi_tx/doc/images/2026-04-10_142239_142.jpg)
+
+这样就不需要窗口管理器(X11 or Wayland), 基于eglfs_kms运行QT应用程序
+
+
+
+目前黑屏后会显示异常, 重影. 后续再加ila找原因并且处理
+
+
 
 
 
