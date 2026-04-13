@@ -13414,6 +13414,12 @@ i2ctransfer -y -a -f 1 w2@0x7c 0x00 0x70 r1;
 
 
 
+复位PL(目前结构可以用下面语句), 但是目前加载bitstream的方式这样操作系统也不能用了...只能用于测试干净的idt8t49n24x配置是否能锁定.
+```
+devmem 0XFF0A0054 32 0x00000000     # 拉低
+devmem 0XFF0A0054 32 0x80000000     # 恢复
+```
+
 
 
 
@@ -14050,11 +14056,10 @@ MALI_BACKEND_DEFAULT = "wayland"
 也可以在Linux运行的时侯，执行下列命令，使libMali.so.9.0指向到/usr/lib/wayland/libMali.so.9.0。
 
 update-alternatives --install /usr/lib/libMali.so.9.0 libmali /usr/lib/wayland/libMali.so.9.0 90
-```
 
 
 
-```
+
 # 如果需要
 killall Xorg
 kill -9 [xinit id]
@@ -14103,6 +14108,7 @@ export QT_QPA_EGLFS_KMS_CONFIG=/etc/qt_kms.json
 自带例子
 /usr/share/examples/opengl/cube/cube
 /usr/share/examples/opengl/textures/textures
+/usr/share/examples/opengl/qopenglwindow/qopenglwindow
 
 这样
 ./qt_button_on_ar24_layer 也可以执行
@@ -14145,7 +14151,78 @@ v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_box_size=50
 
 目前黑屏后会显示异常, 重影. 后续再加ila找原因并且处理
 
+```
+# 1080p30
+modetest -D a0060000.v_mix -s 41:1920x1080-60@AR24 -w 41:sdi_mode:0 -w 41:sdi_data_stream:0 -w 41:is_frac:0
 
+# 1080p60
+modetest -D a0060000.v_mix -s 41:1920x1080-60@AR24 -w 41:sdi_mode:2 -w 41:sdi_data_stream:2 -w 41:is_frac:0
+
+## 不可用
+modetest -D a0060000.v_mix -s 41:1920x1080-60@AR24 -w 41:sdi_mode:3 -w 41:sdi_data_stream:4 -w 41:is_frac:0
+
+# 4k@60
+modetest -D a0060000.v_mix -s 41:3840x2160-60@AR24 -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0
+
+# 4k@30
+modetest -D a0060000.v_mix -s 41:3840x2160-30@AR24 -w 41:sdi_mode:4 -w 41:sdi_data_stream:8 -w 41:is_frac:0
+```
+
+发现4k@60才黑屏后会显示异常, 重影, 具体报`AXI-4 Stream Underflow error`
+
+
+
+恢复默认X11界面
+
+```
+modetest -D a0060000.v_mix -w 41:sdi_mode:0 -w 41:sdi_data_stream:2 -w 41:is_frac:0
+killall Xorg
+```
+
+
+
+
+
+
+
+# DP 1.4 txss
+
+https://adaptivesupport.amd.com/s/article/000035851?language=zh_CN
+
+
+
+```
+$ petalinux-devtool modify kernel-module-dp
+[INFO] Sourcing buildtools
+[INFO] Sourcing build environment
+[INFO] Generating workspace directory
+[INFO] devtool modify kernel-module-dp 
+NOTE: Starting bitbake server...
+NOTE: Started PRServer with DBfile: /home/andy/workdir/zirui/06_vcu_trd_port/tmp/test1/petalinux/build/cache/prserv.sqlite3, Address: 127.0.0.1:43555, PID: 1272687
+NOTE: Reconnecting to bitbake server...
+NOTE: Retrying server connection (#1)...
+NOTE: Started PRServer with DBfile: /home/andy/workdir/zirui/06_vcu_trd_port/tmp/test1/petalinux/build/cache/prserv.sqlite3, Address: 127.0.0.1:39937, PID: 1272727
+WARNING: Host distribution "ubuntu-22.04" has not been validated with this version of the build system; you may possibly experience unexpected failures. It is recommended that you use a tested distribution.
+Loading cache: 100% |##########################################################################################################################################################| Time: 0:00:00
+Loaded 6499 entries from dependency cache.
+Parsing recipes: 100% |########################################################################################################################################################| Time: 0:00:00
+Parsing of 4468 .bb files complete (4463 cached, 5 parsed). 6504 targets, 577 skipped, 1 masked, 0 errors.
+
+Summary: There was 1 WARNING message shown.
+INFO: SRC_URI contains some conditional appends/prepends - will create branches to represent these
+WARNING: Host distribution "ubuntu-22.04" has not been validated with this version of the build system; you may possibly experience unexpected failures. It is recommended that you use a tested distribution.
+NOTE: Resolving any missing task queue dependencies
+NOTE: Fetching uninative binary shim file:///home/andy/workdir/zirui/06_vcu_trd_port/tmp/test1/petalinux/components/yocto/downloads/uninative/126f4f7f6f21084ee140dac3eb4c536b963837826b7c38599db0b512c3377ba2/x86_64-nativesdk-libc-3.4.tar.xz;sha256sum=126f4f7f6f21084ee140dac3eb4c536b963837826b7c38599db0b512c3377ba2 (will check PREMIRRORS first)
+WARNING: Your host glibc version (2.35) is newer than that in uninative (2.34). Disabling uninative so that sstate is not corrupted.
+Initialising tasks: 100% |#####################################################################################################################################################| Time: 0:00:03
+Sstate summary: Wanted 0 Local 0 Network 0 Missed 0 Current 20 (0% match, 100% complete)
+NOTE: Executing Tasks
+NOTE: Tasks Summary: Attempted 93 tasks of which 90 didn't need to be rerun and all succeeded.
+INFO: Source tree extracted to /home/andy/workdir/zirui/06_vcu_trd_port/tmp/test1/petalinux/components/yocto/workspace/sources/kernel-module-dp
+WARNING: SRC_URI is conditionally overridden in this recipe, thus several devtool-override-* branches have been created, one for each override that makes changes to SRC_URI. It is recommended that you make changes to the devtool branch first, then checkout and rebase each devtool-override-* branch and update any unique patches there (duplicates on those branches will be ignored by devtool finish/update-recipe)
+INFO: Using source tree as build directory since that would be the default for this recipe
+INFO: Recipe kernel-module-dp now set up to build from /home/andy/workdir/zirui/06_vcu_trd_port/tmp/test1/petalinux/components/yocto/workspace/sources/kernel-module-dp
+```
 
 
 
