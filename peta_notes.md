@@ -308,7 +308,24 @@ BSP 是怎么“做”出来的?
 
 
 
+# `minicom`
 
+可以在`minicom -s`里去设置存储log文件
+
+也可以通过参数产生log文件
+
+`sudo minicom -C /path/to/logfile.txt`
+
+用`tee`追加
+
+`sudo minicom -C /tmp/minicom_log.txt | tee -a /tmp/minicom_log.txt`
+
+那么, 可以这样. 直接tee保存终端输出
+
+```
+cd ~
+sudo minicom ttyUSB0-115200 -c on | tee minicom.log							# 这里ttyUSB0-115200是一个保存好的串口配置
+```
 
 
 
@@ -1205,38 +1222,57 @@ root@petalinux:/sys/class/gpio# i2cdetect -y -a 2
 
 ## 访问设备
 
+```bash
+root@petalinux:~# i2cdetect -y -a 1
+     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f
+00: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+10: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+20: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+30: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+40: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+50: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+60: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+70: -- -- -- -- -- -- -- -- -- -- -- -- UU -- -- --
+
+# 扩展到0x7f总线地址, 且强制访问(无论是否和驱动绑定), 像下面这样用就行
+i2ctransfer -y -a -f 1 w2@0x7c 0x00 0x70 r1
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x70 0x05
+```
+
+
+
 ## 用`i2ctransfer`而不是`i2cget/i2cset`
 
 读 16-bit 地址 + 8-bit 数据
 
 ```bash
-root@petalinux:/sys/class/gpio# i2ctransfer -y -a 1 w2@0x7c 0x00 0x03 r1
+root@petalinux:/sys/class/gpio# i2ctransfer -y -a -f 1 w2@0x7c 0x00 0x03 r1
 0x60
 ```
 
 读 **16-bit 地址 + 16-bit 数据**
 
 ```bash
-root@petalinux:/sys/class/gpio# i2ctransfer -y -a 1 w2@0x7c 0x00 0x02 r2
+root@petalinux:/sys/class/gpio# i2ctransfer -y -a -f 1 w2@0x7c 0x00 0x02 r2
 0x00 0x60
 ```
 
 读 寄存器地址 `0x0020` 起的长度 4字节
 
 ```bash
-i2ctransfer -y -a 1 w2@0x7c 0x00 0x20 r4
+i2ctransfer -y -a -f 1 w2@0x7c 0x00 0x20 r4
 ```
 
 16-bit寄存器地址写单字节
 
 ```bash
-i2ctransfer -y -a 1 w3@0x7c 0x00 0x20 0x5A
+i2ctransfer -y -a -f 1 w3@0x7c 0x00 0x20 0x5A
 ```
 
 16-bit寄存器地址写双字节
 
 ```bash
-i2ctransfer -y -a 1 w4@0x7c 0x00 0x20 0x12 0x34
+i2ctransfer -y -a -f 1 w4@0x7c 0x00 0x20 0x12 0x34
 ```
 
 i2cget 只能发送 8-bit寄存器地址, 无法发送 16-bit寄存器地址。 所以
@@ -3648,16 +3684,17 @@ git add .
 git commit -m "update: set xlnx_mixer_primary_enable to false"
 cd -
 
-petalinux-devtool finish linux-xlnx	${PWD}/project-spec/meta-user
+# 修改完毕, 不会自动删掉源码目录
+petalinux-devtool finish linux-xlnx	${PWD}/project-spec/meta-user	# 修改过程中最好是 update-recipe
 
 petalinux-devtool status		
-# 如果 No recipes currently in your workspace
+# 如果 No recipes currently in your workspace, 就可以安全删除解出来的源码, 一般不删除, 可以移出去, 反正要保持之前的git提交
 rm -rf components/yocto/workspace/sources/linux-xlnx
 
-# or 
+# or 修改过程中最好是
 petalinux-devtool update-recipe linux-xlnx -a ${PWD}/project-spec/meta-user	# 每次commit会产生一个patch
-# +
-petalinux-devtool reset linux-xlnx 	# 这里让源码不生效而已, 但是不会自动删掉源码目录, 建议这里把components/yocto/workspace/appends/linux-xlnx_2022.2.bbappend自己备份一下, 如果需要载再修改, 就基于这个源码的修改的git, 再解开就是生效, 且之前的git提交还在
+# + 修改完毕
+petalinux-devtool reset linux-xlnx 	# 这里让源码不生效而已, 但是不会自动删掉源码目录, 建议这里把`components/yocto/workspace/appends/linux-xlnx_2022.2.bbappend`自己备份一下, 如果需要载再修改, 就基于这个源码的修改的git, 再解开就是生效, 且之前的git提交还在
 
 # if needed
 petalinux-build -x mrproper
@@ -11343,6 +11380,148 @@ modetest -M xlnx -P 38@39:800x600+1000+100@BG24     # 挂了!
 
 
 
+### 摄像头走`YUV-8bit`链路
+
+`7ce81a9f@yuv-10bit_dataflow`
+
+````
+```
+modetest -M xlnx -s 41@39:1920x1080-60@AR24
+modetest -M xlnx -s 41@39:1920x1080-60 -P 38@39:1920x1080@BG24
+modetest -M xlnx -s 41@39:1920x1080-60 -P 37@39:1920x1080@AR24
+modetest -M xlnx -s 41@39:1920x1080-60 -P 36@39:1920x1080@UYVY
+modetest -M xlnx -s 41@39:1920x1080-60 -P 35@39:1920x1080@YUYV
+modetest -M xlnx -s 41@39:1920x1080-60 -P 34@39:1920x1080@XV20
+
+modetest -M xlnx -s 41@39:3840x2160-60@AR24
+modetest -M xlnx -s 41@39:3840x2160-60 -P 38@39:3840x2160@BG24
+modetest -M xlnx -s 41@39:3840x2160-60 -P 37@39:3840x2160@AR24
+modetest -M xlnx -s 41@39:3840x2160-60 -P 36@39:3840x2160@UYVY
+modetest -M xlnx -s 41@39:3840x2160-60 -P 35@39:3840x2160@YUYV
+modetest -M xlnx -s 41@39:3840x2160-60 -P 34@39:3840x2160@XV20
+
+
+v4l2-ctl --list-devices
+v4l2-ctl -d /dev/video1 --all
+media-ctl -d /dev/media1 -p
+media-ctl -v -d /dev/media1 -V "\"a0140000.v_tpg\":0 [fmt:UYVY8_1X16/1920x1080@1/60 field:none]"
+media-ctl -v -d /dev/media1 -V "\"a0140000.v_tpg\":0 [fmt:UYVY8_1X16/3840x2160@1/60 field:none]"
+media-ctl -d /dev/media1 -p
+
+gst-launch-1.0 \
+v4l2src device=/dev/video1 io-mode=4 ! \
+video/x-raw,format=UYVY,width=1920,height=1080,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=36 sync=false
+
+gst-launch-1.0 \
+v4l2src device=/dev/video1 io-mode=4 ! \
+video/x-raw,format=UYVY,width=3840,height=2160,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=36 sync=false
+
+GST_DEBUG=3 gst-launch-1.0 -v v4l2src device="/dev/video1" io-mode=4 ! video/x-raw, width=3840, height=2160, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink bus-id=a0060000.v_mix plane-id=36 fullscreen-overlay=0
+
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern=8
+
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_foreground_patter=1
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_motion_speed=1
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_box_size=50
+
+
+v4l2-ctl -d /dev/video1 --get-fmt-video
+v4l2-ctl -d /dev/video1 --list-formats-ext
+v4l2-ctl -d /dev/video1 --set-fmt-video=width=1920,height=1080,pixelformat=UYVY
+v4l2-ctl -d /dev/video1 --set-fmt-video=width=3840,height=2160,pixelformat=UYVY
+v4l2-ctl -d /dev/video1 --stream-mmap --stream-count=1 --stream-to=test.raw --verbose
+v4l2-ctl -d /dev/video1 --stream-mmap --verbose
+v4l2-ctl -d /dev/video1 --stream-mmap --stream-count=1
+v4l2-ctl -d /dev/video1 --stream-mmap --stream-count=10
+
+
+
+
+
+
+modetest -M xlnx -s 41@39:3840x2160-60@AR24
+
+media-ctl -d /dev/media0 -p
+media-ctl -d /dev/media0 -V "\"thcv24xap_imx678 0-001a\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":1 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_demosaic\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00a0000.v_gamma_lut\":1 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss":0 [fmt:RBG888_1X24/3840x2160]'
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss":1 [fmt:UYVY/3840x2160]'
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":0 [fmt:RBG888_1X24/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0100000.v_proc_ss\":1 [fmt:UYVY/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss":0 [fmt:UYVY/3840x2160]'
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss":1 [fmt:UYVY/3840x2160]'
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":0 [fmt:UYVY/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":1 [fmt:UYVY/3840x2160 field:none]"
+media-ctl -d /dev/media0 -p
+
+
+
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":1 [fmt:UYVY/1920x1080 field:none]"
+gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=4 ! video/x-raw, width=1920, height=1080, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink bus-id=a0060000.v_mix plane-id=36 fullscreen-overlay=0
+
+
+
+media-ctl -d /dev/media0 -V "\"a00c0000.v_proc_ss\":1 [fmt:UYVY/640x480 field:none]"
+gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=4 ! video/x-raw, width=640, height=480, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink bus-id=a0060000.v_mix plane-id=36 fullscreen-overlay=0
+
+
+
+update-alternatives --install /usr/lib/libMali.so.9.0 libmali /usr/lib/wayland/libMali.so.9.0 90
+export QT_QPA_PLATFORM="eglfs"
+export QT_QPA_EGLFS_KMS_ATOMIC=1
+export QT_QPA_EGLFS_INTEGRATION="eglfs_kms"
+export QT_QPA_EGLFS_DEBUG="1"
+export QT_QPA_EGLFS_FORCE888=1
+export DISPLAY=:0.0
+
+GST_DEBUG=3 gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=4 ! video/x-raw, width=3840, height=2160, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink bus-id=a0060000.v_mix plane-id=36 fullscreen-overlay=0
+
+./qt_button_on_ar24_layer 
+
+
+```
+
+如果需要`/etc/qt_kms.json`
+```
+{
+  "device": "/dev/dri/card0",
+  "outputs": [
+    {
+      "name": "HDMI-A-1",
+      "mode": "3840x2160",
+      "format": "argb8888"
+    }
+  ],
+  "planes": [
+    {
+      "planeId": 37,
+      "zpos": 1
+    }
+  ]
+}
+export QT_QPA_EGLFS_KMS_CONFIG=/etc/qt_kms.json
+```
+
+
+````
+
+
+
+
+
+
+
+
+
 ### 导出`sdk`包含`Qt`库
 
 ```
@@ -11805,7 +11984,7 @@ See the example eglfbdev application (based on fdev) available in the Design Fil
 
 
 
-# 
+
 
 
 
@@ -11847,7 +12026,7 @@ https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/3291185254/HDMI+2.1+PHY+GT
 
 
 
-# `DP 1.4 TX`
+# 视频复制(abort)
 
 
 
@@ -14151,7 +14330,7 @@ v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_box_size=50
 
 目前黑屏后会显示异常, 重影. 后续再加ila找原因并且处理
 
-```
+```bash
 # 1080p30
 modetest -D a0060000.v_mix -s 41:1920x1080-60@AR24 -w 41:sdi_mode:0 -w 41:sdi_data_stream:0 -w 41:is_frac:0
 
@@ -14174,7 +14353,7 @@ modetest -D a0060000.v_mix -s 41:3840x2160-30@AR24 -w 41:sdi_mode:4 -w 41:sdi_da
 
 恢复默认X11界面
 
-```
+```bash
 modetest -D a0060000.v_mix -w 41:sdi_mode:0 -w 41:sdi_data_stream:2 -w 41:is_frac:0
 killall Xorg
 ```
@@ -14185,13 +14364,13 @@ killall Xorg
 
 
 
-# DP 1.4 txss
+# `DP 1.4 txss (abort)`
 
 https://adaptivesupport.amd.com/s/article/000035851?language=zh_CN
 
+https://github.com/Xilinx/dp-modules/tree/xlnx_rel_v2022.1/dp/xfmc
 
-
-```
+```bash
 $ petalinux-devtool modify kernel-module-dp
 [INFO] Sourcing buildtools
 [INFO] Sourcing build environment
@@ -14223,6 +14402,567 @@ WARNING: SRC_URI is conditionally overridden in this recipe, thus several devtoo
 INFO: Using source tree as build directory since that would be the default for this recipe
 INFO: Recipe kernel-module-dp now set up to build from /home/andy/workdir/zirui/06_vcu_trd_port/tmp/test1/petalinux/components/yocto/workspace/sources/kernel-module-dp
 ```
+
+目前对`dts`和`kernel-module-dp`的几个修改都不能出现`/dev/dri/`, 看起来还有问题, 而且这个`kernel-module-dp`和`fmc`关联很高, 需要进行比较大的修改才可能
+
+```bash
+petalinux-devtool modify kernel-module-dp
+
+cd components/yocto/workspace/sources/kernel-module-dp/
+git add .
+git commit -m "update: xxx"
+cd -
+
+petalinux-devtool finish kernel-module-dp ${PWD}/project-spec/meta-user
+# or 
+petalinux-devtool update-recipe kernel-module-dp -a ${PWD}/project-spec/meta-user	# 每次commit会产生一个patch
+
+petalinux-devtool status	
+
+petalinux-devtool reset kernel-module-dp 	# 这里让源码不生效而已, 但是不会自动删掉源码目录
+
+
+```
+
+暂停了.
+
+
+
+# `ISP`链路迁移驱动适配
+
+原来`trd`的`csi`输入链路的`demosaic`和`gamma`模块, 去掉, 整体添加`ISP`有关的所有`IP`.
+
+输出路径上的修改, 最大位宽设置为10, 这样路径上是支持`YUV422-10bit`的.
+
+由于`gstreamer`的格式设置为`v210`等`YUV422-10bit`都不行, 还是用`YUV422-8bit`输出的命令.
+
+适配思路:
+
+输入`isp`链路整个套一个`v4l2-graph`的驱动, 基本上是一个壳, 后续再考虑控制寄存器和控制接口
+
+
+
+
+
+## tpg路径
+
+```
+modetest -M xlnx -s 41@39:1920x1080-60@AR24
+modetest -M xlnx -s 41@39:1920x1080-60 -P 38@39:1920x1080@BG24
+modetest -M xlnx -s 41@39:1920x1080-60 -P 37@39:1920x1080@AR24
+modetest -M xlnx -s 41@39:1920x1080-60 -P 36@39:1920x1080@UYVY
+modetest -M xlnx -s 41@39:1920x1080-60 -P 35@39:1920x1080@YUYV
+modetest -M xlnx -s 41@39:1920x1080-60 -P 34@39:1920x1080@XV20
+
+modetest -M xlnx -s 41@39:3840x2160-60@AR24
+modetest -M xlnx -s 41@39:3840x2160-60 -P 38@39:3840x2160@BG24
+modetest -M xlnx -s 41@39:3840x2160-60 -P 37@39:3840x2160@AR24
+modetest -M xlnx -s 41@39:3840x2160-60 -P 36@39:3840x2160@UYVY
+modetest -M xlnx -s 41@39:3840x2160-60 -P 35@39:3840x2160@YUYV
+modetest -M xlnx -s 41@39:3840x2160-60 -P 34@39:3840x2160@XV20
+
+
+v4l2-ctl --list-devices
+v4l2-ctl -d /dev/video1 --all
+media-ctl -d /dev/media1 -p
+
+media-ctl -v -d /dev/media1 -V "\"a0140000.v_tpg\":0 [fmt:UYVY8_1X16/1920x1080@1/60 field:none]"
+media-ctl -v -d /dev/media1 -V "\"a0140000.v_tpg\":0 [fmt:UYVY8_1X16/3840x2160@1/60 field:none]"
+media-ctl -d /dev/media1 -p
+
+gst-launch-1.0 \
+v4l2src device=/dev/video1 io-mode=4 ! \
+video/x-raw,format=UYVY,width=1920,height=1080,framerate=60/1 ! \
+queue max-size-buffers=2 leaky=downstream ! \
+kmssink driver-name=xlnx plane-id=36 sync=false
+
+GST_DEBUG=3 gst-launch-1.0 -v v4l2src device="/dev/video1" io-mode=4 ! video/x-raw, width=3840, height=2160, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink bus-id=a0060000.v_mix plane-id=36 fullscreen-overlay=0
+
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern=8
+
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_foreground_patter=1
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_motion_speed=1
+v4l2-ctl -d /dev/video1 --set-ctrl=test_pattern_box_size=50
+
+
+v4l2-ctl -d /dev/video1 --get-fmt-video
+v4l2-ctl -d /dev/video1 --list-formats-ext
+v4l2-ctl -d /dev/video1 --set-fmt-video=width=1920,height=1080,pixelformat=UYVY
+v4l2-ctl -d /dev/video1 --stream-mmap --stream-count=1 --stream-to=test.raw --verbose
+v4l2-ctl -d /dev/video1 --stream-mmap --verbose
+v4l2-ctl -d /dev/video1 --stream-mmap --stream-count=1
+v4l2-ctl -d /dev/video1 --stream-mmap --stream-count=10
+```
+
+
+
+## csi路径
+
+驱动添加
+
+```
+sudo dmesg | grep -i zirui
+zcat /proc/config.gz | grep -i zirui
+```
+
+`media-ctl -d /dev/media0 -p`有了
+
+```
+- entity 16: zirui-isp (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev4
+        pad0: Sink
+                [fmt:SRGGB10_1X10/3840x2160 field:none colorspace:raw]
+                <- "a0070000.mipi_csi2_rx_subsystem":1 [ENABLED]
+        pad1: Source
+                [fmt:VUY10_1X30/3840x2160 field:none colorspace:rec709]
+                -> "a0080000.v_proc_ss":0 [ENABLED]
+
+```
+
+尝试运行`gst`显示摄像头
+
+````
+modetest -M xlnx -s 41@39:3840x2160-60@AR24
+
+media-ctl -d /dev/media0 -V "\"thcv24xap_imx678 0-001a\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":1 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"zirui-isp\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"zirui-isp\":1 [fmt:VUY10_1X30/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_proc_ss\":0 [fmt:VUY10_1X30/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_proc_ss\":1 [fmt:UYVY8_1X16/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0300000.v_proc_ss\":0 [fmt:UYVY8_1X16/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0300000.v_proc_ss\":1 [fmt:UYVY8_1X16/3840x2160 field:none]"
+media-ctl -d /dev/media0 -p
+
+gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=4 ! video/x-raw, width=3840, height=2160, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink driver-name=xlnx plane-id=36 fullscreen-overlay=0
+gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=4 ! video/x-raw, width=3840, height=2160, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink bus-id=a0060000.v_mix plane-id=36 fullscreen-overlay=0
+GST_DEBUG=3 gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=4 ! video/x-raw, width=3840, height=2160, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink bus-id=a0060000.v_mix plane-id=36 fullscreen-overlay=0
+
+报错
+streaming stopped, reason not-negotiated (-4)
+
+
+GST_DEBUG=3 gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=4 ! video/x-raw, width=3840, height=2160, format=UYVY! queue max-size-bytes=0 ! kmssink bus-id=a0060000.v_mix plane-id=36 fullscreen-overlay=0
+
+Setting pipeline to PLAYING ...
+0:00:00.363849950  1008 0xaaaaede3ed80 WARN                 basesrc gstbasesrc.c:3127:gst_base_src_loop:<v4l2src0> error: Internal data stream error.
+0:00:00.363884440  1008 0xaaaaede3ed80 WARN                 basesrc gstbasesrc.c:3127:gst_base_src_loop:<v4l2src0> error: streaming stopped, reason not-negotiated (-4)
+
+
+
+实际上
+
+GST_DEBUG=3 gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=4 ! video/x-raw, width=3840, height=2160, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink bus-id=a0060000.v_mix plane-id=36 fullscreen-overlay=0
+输出
+```
+0:00:00.127771120   911 0xaaaafba02730 WARN                 default gstsf.c:97:gst_sf_create_audio_template_caps: format 0x120000: 'AVR (Audio Visual Research)' is not mapped
+0:00:00.127871040   911 0xaaaafba02730 WARN                 default gstsf.c:97:gst_sf_create_audio_template_caps: format 0x180000: 'CAF (Apple Core Audio File)' is not mapped
+0:00:00.127904340   911 0xaaaafba02730 WARN                 default gstsf.c:97:gst_sf_create_audio_template_caps: format 0x100000: 'HTK (HMM Tool Kit)' is not mapped
+0:00:00.127940180   911 0xaaaafba02730 WARN                 default gstsf.c:97:gst_sf_create_audio_template_caps: format 0xc0000: 'MAT4 (GNU Octave 2.0 / Matlab 4.2)' is not mapped
+0:00:00.127971350   911 0xaaaafba02730 WARN                 default gstsf.c:97:gst_sf_create_audio_template_caps: format 0xd0000: 'MAT5 (GNU Octave 2.1 / Matlab 5.0)' is not mapped
+0:00:00.128001610   911 0xaaaafba02730 WARN                 default gstsf.c:97:gst_sf_create_audio_template_caps: format 0x210000: 'MPC (Akai MPC 2k)' is not mapped
+0:00:00.128035660   911 0xaaaafba02730 WARN                 default gstsf.c:97:gst_sf_create_audio_template_caps: format 0xe0000: 'PVF (Portable Voice Format)' is not mapped
+0:00:00.128069310   911 0xaaaafba02730 WARN                 default gstsf.c:97:gst_sf_create_audio_template_caps: format 0x160000: 'SD2 (Sound Designer II)' is not mapped
+0:00:00.128110330   911 0xaaaafba02730 WARN                 default gstsf.c:97:gst_sf_create_audio_template_caps: format 0x190000: 'WVE (Psion Series 3)' is not mapped
+Setting pipeline to PAUSED ...
+Pipeline is live and does not need PREROLL ...
+/GstPipeline:pipeline0/GstKMSSink:kmssink0: display-width = 3840
+0:00:01.628363640   910 0xaaaad5caf980 WARN                    v4l2 gstv4l2object.c:4600:gst_v4l2_object_probe_caps:<v4l2src0:src> Failed to probe pixel aspect ratio with VIDIOC_CROPCAP: Int
+/GstPipeline:pipeline0/GstKMSSink:kmssink0: display-height = 2160
+Pipeline is PREROLLED ...
+Setting pipeline to PLAYING ...
+New clock: GstSystemClock
+/GstPipeline:pipeline0/GstV4l2Src:v4l2src0.GstPad:src: caps = video/x-raw, width=(int)3840, height=(int)2160, framerate=(fraction)60/1, format=(string)UYVY, interlace-mode=(string)progressi0
+/GstPipeline:pipeline0/GstCapsFilter:capsfilter0.GstPad:src: caps = video/x-raw, width=(int)3840, height=(int)2160, framerate=(fraction)60/1, format=(string)UYVY, interlace-mode=(string)pro0
+/GstPipeline:pipeline0/GstQueue:queue0.GstPad:sink: caps = video/x-raw, width=(int)3840, height=(int)2160, framerate=(fraction)60/1, format=(string)UYVY, interlace-mode=(string)progressive,0
+/GstPipeline:pipeline0/GstQueue:queue0.GstPad:sink: caps = video/x-raw, w[  405.729465] xilinx-vpss-scaler a0300000.v_proc_ss: xscaler_s_stream@drivers/media/platform/xilinx/xilinx-vpss-scan
+idth=(int)3840, height=(int)2160, framerate=(fraction)60/1, form[  405.745706] xilinx-vpss-csc a0080000.v_proc_ss: xcsc_s_stream@drivers/media/platform/xilinx/xilinx-vpss-csc.c : Stream On
+at=(string)UYVY, interlace-mode=(string)progressive, colorimetry[  405.761153] zirui-isp a00a0000.zirui_isp: stream ON
+=(string)bt2020
+/GstPipeline:pipeline0/GstCapsFilter:capsfilter[  405.771553] xilinx-csi2rxss a0070000.mipi_csi2_rx_subsystem: xcsi2rxss_s_stream@drivers/media/platform/xilinx/xilinx-csi2rxss.c : Stream On
+0.GstPad:sink: caps = video/x-raw, width=(int)3840, height=(int)[  405.789617] thcv24xap_imx678 0-001a: imx678_set_stream@drivers/media/i2c/thcv24xap_imx678.c : Stream On
+2160, framerate=(fraction)60/1, format=(string)UYVY, interlace-m[  405.804543] thcv24xap_imx678 0-001a: imx678_power_on@drivers/media/i2c/thcv24xap_imx678.c : enter imx678_power_on()
+ode=(string)progressive, colorimetry=(string)bt2020
+/GstPipelin[  405.820504] thcv24xap_imx678 0-001a: thcv242ap_init_pre: begin 
+e:pipeline0/GstKMSSink:kmssink0.GstPad:sink: caps = video/x-raw, width=(int)3840, height=(int)2160, framerate=(fraction)60/1, fo[  405.838739] thcv24xap_imx678 0-001a: thcv242ap_init_pre:   
+rmat=(string)UYVY, interlace-mode=(string)progressive, colorimet[  405.849665] thcv24xap_imx678 0-001a: thcv241ap_init: begin 
+ry=(string)bt2020
+[  405.865409] thcv24xap_imx678 0-001a: thcv241ap_init xclk frequency 37m125
+[  405.884533] thcv24xap_imx678 0-001a: thcv241ap_init:  successfully 
+[  405.902993] thcv24xap_imx678 0-001a: thcv242ap_init_post: begin 
+[  405.938465] thcv24xap_imx678 0-001a: thcv242ap_init_post:  successfully 
+[  406.274436] thcv24xap_imx678 0-001a: imx678_set_stream@drivers/media/i2c/thcv24xap_imx678.c : Stream On
+```
+还没有图像, 看起来Stream On是触发了的
+关闭掉
+```
+^Chandling interrupt.
+Interrupt: Stopping pipeline ...
+Execution en[  440.087384] thcv24xap_imx678 0-001a: imx678_set_stream@drivers/media/i2c/thcv24xap_imx678.c : Stream Off
+ded after 0:00:34.461336450
+Setting pipeline to NULL ...
+[  440.102696] xilinx-csi2rxss a0070000.mipi_csi2_rx_subsystem: xcsi2rxss_s_stream@drivers/media/platform/xilinx/xilinx-csi2rxss.c : Stream Off
+[  440.119625] thcv24xap_imx678 0-001a: imx678_set_stream@drivers/media/i2c/thcv24xap_imx678.c : Stream Off
+[  440.129115] zirui-isp a00a0000.zirui_isp: stream OFF
+[  440.134082] xilinx-vpss-csc a0080000.v_proc_ss: xcsc_s_stream@drivers/media/platform/xilinx/xilinx-vpss-csc.c : Stream Off
+[  440.145131] xilinx-vpss-scaler a0300000.v_proc_ss: xscaler_s_stream@drivers/media/platform/xilinx/xilinx-vpss-scaler.c : Stream Off
+[  440.156978] thcv24xap_imx678 0-001a: imx678_power_off@drivers/media/i2c/thcv24xap_imx678.c : enter imx678_power_off()
+Freeing pipeline ...
+
+```
+
+
+
+
+
+root@petalinux:~# echo 0x1f > /sys/module/videobuf2_common/parameters/debug
+root@petalinux:~# v4l2-ctl -d /dev/video0 --stream-mmap --verbose                                                                                                                             
+VIDIOC_QUERYCAP: ok
+[ 1527.698968] videobuf2_common: [cap-(____ptrval____)] __setup_offsets: buffer 0, plane 0 offset 0x00000000
+[ 1527.712735] videobuf2_common: [cap-(____ptrval____)] __setup_offsets: buffer 1, plane 0 offset 0x00fd2000
+[ 1527.726645] videobuf2_common: [cap-(____ptrval____)] __setup_offsets: buffer 2, plane 0 offset 0x01fa4000
+[ 1527.740742] videobuf2_common: [cap-(____ptrval____)] __setup_offsets: buffer 3, plane 0 offset 0x02f76000
+[ 1527.750306] videobuf2_common: [cap-(____ptrval____)] __vb2_queue_alloc: allocated 4 buffers, 1 plane(s) each
+                VIDIOC_REQBUFS returned 0 (Success)
+                VIDIOC_QUERYBUF returned [ 1527.760425] videobuf2_common: [cap-(____ptrval____)] vb2_mmap: buffer 0, plane 0 successfully mapped
+0 (Success)
+                VIDIOC_QUERYBUF returned 0 (Success)
+                VIDIOC_QU[ 1527.775138] videobuf2_common: [cap-(____ptrval____)] vb2_mmap: buffer 1, plane 0 successfully mapped
+ERYBUF returned 0 (Success)
+                VIDIOC_QUERYBUF returned 0 (Succe[ 1527.789802] videobuf2_common: [cap-(____ptrval____)] vb2_mmap: buffer 2, plane 0 successfully mapped
+ss)
+[ 1527.804461] videobuf2_common: [cap-(____ptrval____)] vb2_mmap: buffer 3, plane 0 successfully mapped
+[ 1527.813957] videobuf2_common: [cap-(____ptrval____)] vb2_core_qbuf: qbuf of buffer 0 succeeded
+                VIDIOC_QBUF returned 0 (Success)
+[ 1527.822612] videobuf2_common: [cap-(____ptrval____)] vb2_core_qbuf: qbuf of buffer 1 succeeded
+                VIDIOC_QBUF returned 0 (Success)
+[ 1527.834342] videobuf2_common: [cap-(____ptrval____)] vb2_core_qbuf: qbuf of buffer 2 succeeded
+                VIDIOC_QBUF returned 0 (Success)
+[ 1527.846101] videobuf2_common: [cap-(____ptrval____)] vb2_core_qbuf: qbuf of buffer 3 succeeded
+                VIDIOC_QBUF returned 0 (Success)
+[ 1527.857892] xilinx-vpss-scaler a0300000.v_proc_ss: xscaler_s_stream@drivers/media/platform/xilinx/xilinx-vpss-scaler.c : Stream On
+[ 1527.873732] xilinx-vpss-csc a0080000.v_proc_ss: xcsc_s_stream@drivers/media/platform/xilinx/xilinx-vpss-csc.c : Stream On
+[ 1527.884699] zirui-isp a00a0000.zirui_isp: stream ON
+[ 1527.889572] xilinx-csi2rxss a0070000.mipi_csi2_rx_subsystem: xcsi2rxss_s_stream@drivers/media/platform/xilinx/xilinx-csi2rxss.c : Stream On
+[ 1527.902093] thcv24xap_imx678 0-001a: imx678_set_stream@drivers/media/i2c/thcv24xap_imx678.c : Stream On
+[ 1527.911490] thcv24xap_imx678 0-001a: imx678_power_on@drivers/media/i2c/thcv24xap_imx678.c : enter imx678_power_on()
+[ 1527.921919] thcv24xap_imx678 0-001a: thcv242ap_init_pre: begin 
+[ 1527.934610] thcv24xap_imx678 0-001a: thcv242ap_init_pre:  successfully 
+[ 1527.941222] thcv24xap_imx678 0-001a: thcv241ap_init: begin 
+[ 1527.951436] thcv24xap_imx678 0-001a: thcv241ap_init xclk frequency 37m125
+[ 1527.970578] thcv24xap_imx678 0-001a: thcv241ap_init:  successfully 
+[ 1527.990984] thcv24xap_imx678 0-001a: thcv242ap_init_post: begin 
+[ 1528.026471] thcv24xap_imx678 0-001a: thcv242ap_init_post:  successfully 
+[ 1528.362428] thcv24xap_imx678 0-001a: imx678_set_stream@drivers/media/i2c/thcv24xap_imx678.c : Stream On
+[ 1528.371822] videobuf2_common: [cap-(____ptrval____)] vb2_core_streamon: successful
+                VIDIOC_STREAMON returned 0 (Success)
+[ 1528.379471] videobuf2_common: [cap-(____ptrval____)] __vb2_wait_for_done_vb: will sleep waiting for buffers
+^C[ 1548.785168] videobuf2_common: [cap-(____ptrval____)] __vb2_wait_for_done_vb: sleep was interrupted
+[ 1548.795812] thcv24xap_imx678 0-001a: imx678_set_stream@drivers/media/i2c/thcv24xap_imx678.c : Stream Off
+[ 1548.806064] xilinx-csi2rxss a0070000.mipi_csi2_rx_subsystem: xcsi2rxss_s_stream@drivers/media/platform/xilinx/xilinx-csi2rxss.c : Stream Off
+[ 1548.818670] thcv24xap_imx678 0-001a: imx678_set_stream@drivers/media/i2c/thcv24xap_imx678.c : Stream Off
+[ 1548.828156] zirui-isp a00a0000.zirui_isp: stream OFF
+[ 1548.833120] xilinx-vpss-csc a0080000.v_proc_ss: xcsc_s_stream@drivers/media/platform/xilinx/xilinx-vpss-csc.c : Stream Off
+[ 1548.844165] xilinx-vpss-scaler a0300000.v_proc_ss: xscaler_s_stream@drivers/media/platform/xilinx/xilinx-vpss-scaler.c : Stream Off
+[ 1548.856018] thcv24xap_imx678 0-001a: imx678_power_off@drivers/media/i2c/thcv24xap_imx678.c : enter imx678_power_off()
+[ 1548.915002] videobuf2_common: [cap-(____ptrval____)] vb2_buffer_done: done processing on buffer 0, state: error
+[ 1548.925082] videobuf2_common: [cap-(____ptrval____)] vb2_buffer_done: done processing on buffer 1, state: error
+[ 1548.935161] videobuf2_common: [cap-(____ptrval____)] vb2_buffer_done: done processing on buffer 2, state: error
+[ 1548.945236] videobuf2_common: [cap-(____ptrval____)] vb2_buffer_done: done processing on buffer 3, state: error
+[ 1548.956987] videobuf2_common: [cap-(____ptrval____)] __vb2_buf_mem_free: freed plane 0 of buffer 0
+[ 1548.967939] videobuf2_common: [cap-(____ptrval____)] __vb2_buf_mem_free: freed plane 0 of buffer 1
+[ 1548.978521] videobuf2_common: [cap-(____ptrval____)] __vb2_buf_mem_free: freed plane 0 of buffer 2
+[ 1548.989567] videobuf2_common: [cap-(____ptrval____)] __vb2_buf_mem_free: freed plane 0 of buffer 3
+
+
+````
+
+
+
+记录
+
+```
+root@petalinux:~# media-ctl -d /dev/media0 -p
+Media controller API version 5.15.36
+
+Media device information
+------------------------
+driver          xilinx-video
+model           Xilinx Video Composite Device
+serial          
+bus info        
+hw revision     0x0
+driver version  5.15.36
+
+Device topology
+- entity 1: vcap_mipi_csi2_rx_v_proc_ss_sca (1 pad, 1 link)
+            type Node subtype V4L flags 0
+            device node name /dev/video0
+        pad0: Sink
+                <- "a0300000.v_proc_ss":1 [ENABLED]
+
+- entity 5: thcv24xap_imx678 0-001a (1 pad, 1 link)
+            type V4L2 subdev subtype Sensor flags 0
+            device node name /dev/v4l-subdev0
+        pad0: Source
+                [fmt:SRGGB10_1X10/3840x2160 field:none colorspace:raw xfer:none]
+                -> "a0070000.mipi_csi2_rx_subsystem":0 [ENABLED]
+
+- entity 7: a0070000.mipi_csi2_rx_subsystem (2 pads, 2 links)
+            type V4L2 subdev subtype Unknown flags 0
+            device node name /dev/v4l-subdev1
+        pad0: Sink
+                [fmt:SRGGB10_1X10/3840x2160 field:none]
+                <- "thcv24xap_imx678 0-001a":0 [ENABLED]
+        pad1: Source
+                [fmt:SRGGB10_1X10/3840x2160 field:none]
+                -> "zirui-isp":0 [ENABLED]
+
+- entity 10: a0080000.v_proc_ss (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev2
+        pad0: Sink
+                [fmt:VUY10_1X30/3840x2160 field:none]
+                <- "zirui-isp":1 [ENABLED]
+        pad1: Source
+                [fmt:UYVY8_1X16/3840x2160 field:none]
+                -> "a0300000.v_proc_ss":0 [ENABLED]
+
+- entity 13: a0300000.v_proc_ss (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev3
+        pad0: Sink
+                [fmt:UYVY8_1X16/3840x2160 field:none]
+                <- "a0080000.v_proc_ss":1 [ENABLED]
+        pad1: Source
+                [fmt:UYVY8_1X16/3840x2160 field:none]
+                -> "vcap_mipi_csi2_rx_v_proc_ss_sca":0 [ENABLED]
+
+- entity 16: zirui-isp (2 pads, 2 links)
+             type V4L2 subdev subtype Unknown flags 0
+             device node name /dev/v4l-subdev4
+        pad0: Sink
+                [fmt:SRGGB10_1X10/3840x2160 field:none]
+                <- "a0070000.mipi_csi2_rx_subsystem":1 [ENABLED]
+        pad1: Source
+                [fmt:VUY10_1X30/3840x2160 field:none colorspace:rec709]
+                -> "a0080000.v_proc_ss":0 [ENABLED]
+
+```
+
+
+
+目前状态:
+
+  ✔ `STREAM ON `成功
+  ✔ `buffer` 已经 `QBUF`
+  ❌ 没有任何 `buffer` 被填充
+
+怀疑`ISP`需要配置才通, 添加`ila`监测出入`isp`的`axis`视频流是否存在. 
+
+
+
+摄像头进来的是30fps, 而不是60fps
+
+```
+devmem 0xA0020000 w 0xFFFFFFFD
+devmem 0xA0020000 w 0xFFFFFFFF
+#再按前面的配置摄像头的记录, 可以恢复60fps
+
+#抓波形对比. 多了这些. 其中VMAX是关键
+i2ctransfer -f -a -y 0 w3@0x1A 0x30 0x01 0x01
+i2ctransfer -f -a -y 0 w3@0x1A 0x30 0x28 0x94	# 关键是这三个, 驱动里设置的是4500, 是2250的两倍, 而这个是VMAX, 确实可以让帧率减半
+i2ctransfer -f -a -y 0 w3@0x1A 0x30 0x29 0x11	#
+i2ctransfer -f -a -y 0 w3@0x1A 0x30 0x2a 0x00	#
+i2ctransfer -f -a -y 0 w3@0x1A 0x30 0x50 0x4c
+i2ctransfer -f -a -y 0 w3@0x1A 0x30 0x51 0x0b
+i2ctransfer -f -a -y 0 w3@0x1A 0x30 0x52 0x00
+i2ctransfer -f -a -y 0 w3@0x1A 0x30 0x70 0x00
+i2ctransfer -f -a -y 0 w3@0x1A 0x30 0x71 0x00
+i2ctransfer -f -a -y 0 w3@0x1A 0x30 0x01 0x00
+i2ctransfer -f -a -y 0 w3@0x1A 0x30 0x00 0x00
+```
+
+修改`thcv24xap_imx678.c`, 出一个补丁即可
+
+
+
+# `DSI TX`
+
+<https://adaptivesupport.amd.com/s/article/Video-Master-Series-2-MIPI-DSI-pipeline-with-video-mixer-Linux-pipeline?language=en_US>
+
+`vivado`的`dsi-tx subsystem`不提供例子, 但是上面链接给出`petalinux`的例子. 看起来没有提到`TP`和`BL`
+
+另外, 正点原子的例子是个自定义的`IP`, 也提供到`petalinux` 层面.
+
+目前不弄这个, 留个信息在这
+
+# `sata hdd` 和 `usb 3.0`
+
+<https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/18842339/SATA>
+
+<https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/18841716/Zynq+Ultrascale+MPSOC+Linux+SIOU+driver>
+
+<https://adaptivesupport.amd.com/s/question/0D52E00006iHvZLSA0/custom-zynqmp-board-sata-oob-parameters?language=en_US>
+
+<https://adaptivesupport.amd.com/s/article/71584?language=en_US>
+
+<https://fpga.eetrend.com/blog/2023/100568063.html>
+
+<https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/18841729/DWC3+Xilinx+Linux+USB+driver>
+
+<https://www.hackster.io/pablotrujillojuan/connecting-an-ssd-to-an-fpga-with-petalinux-2c8b48>
+
+<https://github.com/Xilinx/linux-xlnx/blob/master/Documentation/devicetree/bindings/phy/xlnx%2Czynqmp-psgtr.yaml>
+
+```
+ 内核dt的文档也有几个
+ 
+ 1114  gedit include/linux/usb/phy.h
+ 1115  grep -R psgtr
+ 1116  gedit usb/dwc3-xilinx.yaml
+ 1117  gedit phy/xlnx,zynqmp-psgtr.yaml
+ 1118  grep -R ethernet_phy
+ 1119  gedit net/nixge.txt
+ 1120  grep -R ZYNQMP_RESET_SATA
+ 1121  grep -R dr_mode
+ 1122  gedit usb/dwc3-xilinx.yaml
+ 1123  gedit usb/snps,dwc3.yaml
+
+```
+
+`psgtr`在2021版本之后`dt`有一些明显的变动, 不再提供`&lane0`..等节点. 原理是可以按照旧版本的`dt`来重定义`psgtr`设置的. 目前采用的是新版本的例子里的办法, 没有功夫清理冗余.
+
+即自定义了下面几个时钟
+
+```
+    refclk0:psgtr_pcie_clock {
+        compatible = "fixed-clock";
+        #clock-cells = <0x00>;
+        clock-frequency = <150000000>;
+    };
+    refclk1:psgtr_usb_clock {
+        compatible = "fixed-clock";
+        #clock-cells = <0x00>;
+        clock-frequency = <26000000>;
+    };
+    refclk2:psgtr_dp_clock {
+        compatible = "fixed-clock";
+        #clock-cells = <0x00>;
+        clock-frequency = <27000000>;
+    };
+    refclk3:psgtr_sata_clock {
+        compatible = "fixed-clock";
+        #clock-cells = <0x00>;
+        clock-frequency = <150000000>;
+    };
+    
+    &psgtr {
+        status = "okay";
+        clocks = <&refclk0>,<&refclk1>, <&refclk2>, <&refclk3>;
+        clock-names = "ref0", "ref1", "ref2", "ref3";
+    };
+```
+
+用到了`lane1`
+
+```
+&usb0 {
+    phy-names = "usb3-phy";
+    phys = <&psgtr 1 PHY_TYPE_USB3 0 1>;
+};
+```
+
+用到了`lane3`
+
+```
+&sata {
+    status = "okay";
+    reg = <0xfd0c0000 0x200>;
+    // ceva,p0-cominit-params = /bits/ 8 <0x0F 0x25 0x18 0x29>;
+    // ceva,p0-comwake-params = /bits/ 8 <0x04 0x0B 0x08 0x0F>;
+    // ceva,p0-burst-params = /bits/ 8 <0x0A 0x08 0x4A 0x06>;
+    // ceva,p0-retry-params = /bits/ 16 <0x0216 0x7F06>;
+    // ceva,p1-cominit-params = /bits/ 8 <0x0F 0x25 0x18 0x29>;
+    // ceva,p1-comwake-params = /bits/ 8 <0x04 0x0B 0x08 0x0F>;
+    // ceva,p1-burst-params = /bits/ 8 <0x0A 0x08 0x4A 0x06>;
+    // ceva,p1-retry-params = /bits/ 16 <0x0216 0x7F06>;
+    ceva,p0-cominit-params = /bits/ 8 <0x18 0x40 0x18 0x28>;
+    ceva,p0-comwake-params = /bits/ 8 <0x06 0x14 0x08 0x0E>;
+    ceva,p0-burst-params = /bits/ 8 <0x13 0x08 0x4A 0x06>;
+    ceva,p0-retry-params = /bits/ 16 <0x96A4 0x3FFC>;
+    ceva,p1-cominit-params = /bits/ 8 <0x1B 0x4D 0x18 0x28>;
+    ceva,p1-comwake-params = /bits/ 8 <0x06 0x19 0x08 0x0E>;
+    ceva,p1-burst-params = /bits/ 8 <0x13 0x08 0x4A 0x06>;
+    ceva,p1-retry-params = /bits/ 16 <0x96A4 0x3FFC>;
+
+    ceva,broken-gen2;
+    phys = <&psgtr 3 PHY_TYPE_SATA 1 3>;
+    resets = <&zynqmp_reset ZYNQMP_RESET_SATA>;
+};
+```
+
+`phys`最后一个时钟选择和`psgtr`后面的lane源, 如果`psgtr`不是完整4个参考时钟源, 不确定是用什么数值, 所以, `psgtr`给出了4个参考时钟源占位. 目前也没有时间清查验证.
+
+
+
+```
+root@petalinux:~# echo "- - -" > /sys/class/scsi_host/host0/scan
+```
+
+
+
+# devmem
+
+
+
+从读50个32位寄存器
+
+```
+for((i=0;i<50;i++));do printf "0x%08X : %s\n" $((0xA00A0000+i*4)) "$(devmem $((0xA00A0000+i*4)) 32)";done
+
+
+==
+
+base=0xA00A0000; for ((i=0;i<50;i++)); do addr=$((base+i*4)); printf "0x%08X : " $addr; devmem $addr 32; done
+
+
+# 计算偏移量
+ADDRESS=$(printf "0xa00a0000 + %d" $((8*4)))
+
+# 计算位操作
+VALUE=$(( (0x80 << 31) | (0x4 << 24) | 0x0384))
+
+# 执行 devmem 写操作
+devmem $ADDRESS 32 $VALUE
+
+
+# 变量值算术
+devmem $(($FBWR + 0x10)) 32 $FBADDR
+
+
+devmem $((0xa00a0000 + 8*4)) 32 $(( (0x80 << 31) | (0x4 << 24) | 0x0384)))
+
+$ printf "0x%08X" $((0xa00a0000 + 8*4))
+0xA00A0020
+
+
+devmem $(printf "0x%08X" $((0xa00a0000 + 8*4))) 32 $(( (0x80 << 31) | (0x4 << 24) | 0x0384)))
+
+
+```
+
+
+
+
+
+
+
+
+
+
 
 
 
