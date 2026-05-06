@@ -14552,6 +14552,76 @@ Setting pipeline to PLAYING ...
 
 
 
+zirui_isp 的初始化设置
+# dpc_cfg
+devmem 0x80090020 32 0x04000384
+
+# blc_cfg
+devmem 0x80090028 32 0x00000030
+
+# awb_ini
+devmem 0x80090008 32 0x03c00b40
+devmem 0x8009000c 32 0x021c0654
+devmem 0x80090010 32 0x00019f38
+devmem 0x80090014 32 0x00010000
+devmem 0x80090018 32 0x00010000
+devmem 0x8009001c 32 0x0001fe8e
+devmem 0x80090004 32 0x88000000
+
+# ccm_ini
+devmem 0x8009002c 32 0x8001264a
+devmem 0x80090030 32 0x00009589
+devmem 0x80090034 32 0x0000c42c
+devmem 0x80090038 32 0x00009ea1
+devmem 0x8009003c 32 0x000138cb
+devmem 0x80090040 32 0x0000a893
+devmem 0x80090044 32 0x0000b48c
+devmem 0x80090048 32 0x00008e1c
+devmem 0x8009004c 32 0x00013d56
+
+# ae_ini
+devmem 0x80090050 32 0x800001f4
+devmem 0x80090054 32 0x39390cff
+devmem 0x80090058 32 0x00020f00
+devmem 0x8009005c 32 0x00020870
+
+# gc_cfg
+devmem 0x80090060 32 0x80000000
+
+# rgb_dzc_btc_ctc_cfg
+devmem 0x80090068 32 0x010a0aff
+
+# pro_cfg
+devmem 0x80090064 32 0x80000000
+
+# sharpen_cfg
+devmem 0x80090070 32 0x000503e8
+devmem 0x80090074 32 0x001e0088
+devmem 0x80090078 32 0x00e10088
+devmem 0x8009007c 32 0x001e0088
+devmem 0x80090080 32 0x026303ef
+devmem 0x80090084 32 0x02630088
+devmem 0x80090088 32 0x00e103ef
+devmem 0x8009008c 32 0x067c03ef
+devmem 0x80090090 32 0x00e10088
+devmem 0x80090094 32 0x026303ef
+devmem 0x80090098 32 0x02630088
+devmem 0x8009009c 32 0x001e0088
+devmem 0x800900a0 32 0x00e10088
+devmem 0x800900a4 32 0x001e00ff
+
+# ynr_cnr_cfg
+devmem 0x800900a8 32 0x00320014
+
+# yuv_sat_hue_cfg
+devmem 0x8009006c 32 0x0080005a
+
+
+
+
+
+
+
 实际上
 
 GST_DEBUG=3 gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=4 ! video/x-raw, width=3840, height=2160, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink bus-id=a0060000.v_mix plane-id=36 fullscreen-overlay=0
