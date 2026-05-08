@@ -329,6 +329,21 @@ sudo minicom ttyUSB0-115200 -c on | tee minicom.log							# 这里ttyUSB0-115200
 
 
 
+# 运行时查看设备树和内核选项
+
+```
+zcat /proc/config.gz | grep -i xxx
+
+cd /sys/firmware/devicetree/base
+cat ....
+xxd ....
+
+dtc -I fs -O dts -o myboard.dts /sys/firmware/devicetree/base
+cat myboard.dts
+```
+
+
+
 
 # 问题处理1: PL设备节点名修正
 
@@ -15027,6 +15042,129 @@ devmem $(printf "0x%08X" $((0xa00a0000 + 8*4))) 32 $(( (0x80 << 31) | (0x4 << 24
 
 
 
+
+# 串口屏基本操作记录
+
+```
+
+stty -F /dev/ttyPS1 115200 cs8 -cstopb -parenb -ixoff
+
+
+stty -F /dev/ttyPS1 115200 raw
+stty -F /dev/ttyPS1 19200 raw
+stty -F /dev/ttyPS1 9600 raw
+
+stty -F /dev/ttyPS1 raw -echo
+
+
+hexdump -C /dev/ttyPS1
+
+xxd /dev/ttyPS1
+这些工具 会缓存一部分数据（通常 4~16 字节），然后才刷新到终端。满 16 字节才显示一次
+
+# 实时接收并每字节换行
+cat /dev/ttyPS1 | xxd -p -c 1
+
+# 实时接收并每16字节换行
+stdbuf -i0 -o0 xxd -p -c 16 /dev/ttyPS1     # 输入/输出无缓冲，保证实时显示
+
+
+
+
+
+printf '\x5A\xA5\x04\x83\x00\x10\x01' > /dev/ttyPS1
+
+
+
+sudo apt install tio
+
+tio /dev/ttyUSB0
+
+tio -b 115200 /dev/ttyUSB0
+
+tio -L test.log /dev/ttyUSB0
+
+
+printf '\xEE\xB1\x01\x00\x00\xFF\xFC\xFF\xFF' > /dev/ttyPS1
+printf '\xEE\xB1\x11\x00\x03\x00\x0B\x10\x00\x00\xFF\xFC\xFF\xFF' > /dev/ttyPS1
+
+printf '\xEE\xB1\x01\x00\x03\xFF\xFC\xFF\xFF' > /dev/ttyPS1
+printf '\xEE\xB1\x11\x00\x00\x00\x01\x10\x00\x00\xFF\xFC\xFF\xFF' > /dev/ttyPS1
+
+
+ee b1 11 00 00 00 01 10 00 01 ff fc ff ff ee b1
+01 00 03 ff fc ff ff ee b1 11 00 00 00 01 10 00
+
+
+
+EE B1 01 00 00 FF FC FF FF
+EE B1 11 00 03 00 0B 10 00 00 FF FC FF FF 
+
+
+printf '\xEE\xB1\x11\x00\x03\x00\x0B\x10\x00\x00\xFF\xFC\xFF\xFF' > /dev/ttyPS1
+printf '\xEE\xB1\x01\x00\x00\xFF\xFC\xFF\xFF' > /dev/ttyPS1
+
+EE B1 01 00 03 FF FC FF FF 
+EE B1 11 00 00 00 01 10 00 00 FF FC FF FF 
+
+
+
+
+切到画面1
+EE B1 00 00 01 D8 E6 FF FC FF FF 
+printf '\xEE\xB1\x00\x00\x01\xD8\xE6\xFF\xFC\xFF\xFF' > /dev/ttyPS1
+
+EE B1 00 00 01 FF FC FF FF
+printf '\xEE\xB1\x00\x00\x01\xFF\xFC\xFF\xFF' > /dev/ttyPS1
+
+
+读取画面ID
+printf '\xEE\xB1\x01\xFF\xFC\xFF\xFF' > /dev/ttyPS1
+屏幕回复 eeb1010001fffcffff, eeb1010000fffcffff 之类
+
+
+printf '\xee\xb1\x11\x00\x01\x00\x11\x10\x00\x01\xff\xfc\xff\xff' > /dev/ttyPS1
+printf '\xee\xb1\x01\x00\x00\xff\xfc\xff\xff\xee\xb1\x11\x00\x01\x00\x11\x10\x00' > /dev/ttyPS1
+
+
+
+
+printf '\xee\xb1\x11\x00\x00\x00\x01\x10\x00\x01\xff\xfc\xff\xff' > /dev/ttyPS1
+printf '\xee\xb1\x01\x00\x03\xff\xfc\xff\xff\xee\xb1\x11\x00\x00\x00\x01\x10\x00' > /dev/ttyPS1
+
+
+
+蜂鸣器发一声
+printf '\xEE\x61\x0A\xFF\xFC\xFF\xFF' > /dev/ttyPS1     # 维持时间短
+printf '\xEE\x61\xAA\xFF\xFC\xFF\xFF' > /dev/ttyPS1     # 维持时间长
+
+亮度调节
+printf '\xEE\x60\x0A\xFF\xFC\xFF\xFF' > /dev/ttyPS1     # 较亮
+printf '\xEE\x60\xAA\xFF\xFC\xFF\xFF' > /dev/ttyPS1     # 较暗
+
+
+EE 01 00 81 00 88 FF FC FF FF 
+EE B1 01 00 03 FF FC FF FF 
+EE B1 11 00 00 00 01 10 00 00 FF FC FF FF 
+
+printf '\xEE\x01\x00\x81\x00\x88\xFF\xFC\xFF\xFF' > /dev/ttyPS1
+printf '\xEE\xB1\x01\x00\x03\xFF\xFC\xFF\xFF' > /dev/ttyPS1
+printf '\xEE\xB1\x11\x00\x00\x00\x01\x10\x00\x00\xFF\xFC\xFF\xFF' > /dev/ttyPS1
+
+
+
+
+printf '\xEE\x60\x0A\xFF\xFC\xFF\xFF' > /dev/ttyPS1
+
+
+
+
+
+
+
+
+
+```
 
 
 
