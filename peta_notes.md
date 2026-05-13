@@ -62,18 +62,19 @@ petalinux-build										# == petalinux-build petalinux-image-minimal
 下面这样可以用于验证`dts`的修改
 
 ```
-petalinux-build -c fsbl-firmware -x cleansstate
-petalinux-build -c device-tree -x cleansstate
-petalinux-build -c device-tree
-```
-
-或许加上下面的可以避免全部重编译
-
-```
 petalinux-build -c bootloader -x cleansstate
+petalinux-build -c fsbl-firmware -x cleansstate
 petalinux-build -c pmu-firmware -x cleansstate
 petalinux-build -c u-boot -x cleansstate
 petalinux-build -c linux-xlnx -x cleansstate
+petalinux-build -c device-tree -x cleansstate
+```
+
+```
+
+for c in bootloader fsbl-firmware pmu-firmware u-boot linux-xlnx device-tree; do
+    petalinux-build -c $c -x cleansstate
+done
 ```
 
 也可以`distclean`
@@ -156,7 +157,7 @@ petalinux-build -c petalinux-image-minimal -x do_compile
 
 ```
 petalinux-build -c device-tree -x cleansstate
-petalinux-build -c device-tree -x do_compile
+petalinux-build -c device-tree -x do_compile	== petalinux-build -c device-tree
 ```
 
 
