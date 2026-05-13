@@ -11869,7 +11869,7 @@ export QT_QPA_EGLFS_INTEGRATION=eglfs_kms
 export QT_QPA_EGLFS_KMS_CONFIG=./qt_kms.json
 ```
 
-都不行, 再分析之前有关`startx`的研究,  差异是目前的`stream`层是`primary layer`, 而能运行`startx`的`primary layer`是`AR24`层.
+都不行, 再分析之前有关`startx`的研究,  差异是目前的`stream`层是`primary layer`(20fb7702), 而能运行`startx`的`primary layer`是`AR24`层.
 
 
 
@@ -11877,7 +11877,7 @@ export QT_QPA_EGLFS_KMS_CONFIG=./qt_kms.json
 
 
 
-那么修改`dts`, `ar24`为`mixer`主层, `startx`有显示
+那么修改`dts`, `ar24`为`mixer`主层, `startx`有显示(4eed14fc)
 
 ```
 modetest -M xlnx -s 41@39:3840x2160-60@AR24
@@ -11946,7 +11946,7 @@ modetest -D a0060000.v_mix
 
 
 
-是否要选`libmali-xlnx`?
+### 是否要选`libmali-xlnx`?
 
 <https://xilinx.github.io/Embedded-Design-Tutorials/docs/2023.1/build/html/docs/Design_Tutorials/MPSoC_Graphic_Subsystem/README.html?utm_source=chatgpt.com>
 
@@ -14134,6 +14134,10 @@ root@petalinux:/media/card# cat /etc/qt_kms.json
     }
   ]
 }
+
+如果是hdmi输出
+
+
 root@petalinux:/media/card# modetest -M xlnx -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0
 failed to open device 'xlnx': No such file or directory
 root@petalinux:/media/card# modetest -D a0060000.v_mix -w 41:sdi_mode:5 -w 41:sdi_data_stream:8 -w 41:is_frac:0
@@ -14441,7 +14445,7 @@ petalinux-devtool reset kernel-module-dp 	# 这里让源码不生效而已, 但�
 
 暂停了.
 
-
+https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/665747573/Xilinx+DRM+KMS+DisplayPort+1.4+TX+Subsystem+Driver#Building-Device-Tree-with-FMC
 
 # `ISP`链路迁移驱动适配
 
@@ -14569,67 +14573,67 @@ Setting pipeline to PLAYING ...
 
 zirui_isp 的初始化设置
 # dpc_cfg
-devmem 0x80090020 32 0x04000384
+devmem 0xa00a0020 32 0x04000384
 
 # blc_cfg
-devmem 0x80090028 32 0x00000030
+devmem 0xa00a0028 32 0x00000030
 
 # awb_ini
-devmem 0x80090008 32 0x03c00b40
-devmem 0x8009000c 32 0x021c0654
-devmem 0x80090010 32 0x00019f38
-devmem 0x80090014 32 0x00010000
-devmem 0x80090018 32 0x00010000
-devmem 0x8009001c 32 0x0001fe8e
-devmem 0x80090004 32 0x88000000
+devmem 0xa00a0008 32 0x03c00b40
+devmem 0xa00a000c 32 0x021c0654
+devmem 0xa00a0010 32 0x00019f38
+devmem 0xa00a0014 32 0x00010000
+devmem 0xa00a0018 32 0x00010000
+devmem 0xa00a001c 32 0x0001fe8e
+devmem 0xa00a0004 32 0x88000000
 
 # ccm_ini
-devmem 0x8009002c 32 0x8001264a
-devmem 0x80090030 32 0x00009589
-devmem 0x80090034 32 0x0000c42c
-devmem 0x80090038 32 0x00009ea1
-devmem 0x8009003c 32 0x000138cb
-devmem 0x80090040 32 0x0000a893
-devmem 0x80090044 32 0x0000b48c
-devmem 0x80090048 32 0x00008e1c
-devmem 0x8009004c 32 0x00013d56
+devmem 0xa00a002c 32 0x8001264a
+devmem 0xa00a0030 32 0x00009589
+devmem 0xa00a0034 32 0x0000c42c
+devmem 0xa00a0038 32 0x00009ea1
+devmem 0xa00a003c 32 0x000138cb
+devmem 0xa00a0040 32 0x0000a893
+devmem 0xa00a0044 32 0x0000b48c
+devmem 0xa00a0048 32 0x00008e1c
+devmem 0xa00a004c 32 0x00013d56
 
 # ae_ini
-devmem 0x80090050 32 0x800001f4
-devmem 0x80090054 32 0x39390cff
-devmem 0x80090058 32 0x00020f00
-devmem 0x8009005c 32 0x00020870
+devmem 0xa00a0050 32 0x800001f4
+devmem 0xa00a0054 32 0x39390cff
+devmem 0xa00a0058 32 0x00020f00
+devmem 0xa00a005c 32 0x00020870
 
 # gc_cfg
-devmem 0x80090060 32 0x80000000
+devmem 0xa00a0060 32 0x80000000
 
 # rgb_dzc_btc_ctc_cfg
-devmem 0x80090068 32 0x010a0aff
+devmem 0xa00a0068 32 0x010a0aff
 
 # pro_cfg
-devmem 0x80090064 32 0x80000000
+devmem 0xa00a0064 32 0x80000000
 
 # sharpen_cfg
-devmem 0x80090070 32 0x000503e8
-devmem 0x80090074 32 0x001e0088
-devmem 0x80090078 32 0x00e10088
-devmem 0x8009007c 32 0x001e0088
-devmem 0x80090080 32 0x026303ef
-devmem 0x80090084 32 0x02630088
-devmem 0x80090088 32 0x00e103ef
-devmem 0x8009008c 32 0x067c03ef
-devmem 0x80090090 32 0x00e10088
-devmem 0x80090094 32 0x026303ef
-devmem 0x80090098 32 0x02630088
-devmem 0x8009009c 32 0x001e0088
-devmem 0x800900a0 32 0x00e10088
-devmem 0x800900a4 32 0x001e00ff
+devmem 0xa00a0070 32 0x000503e8
+devmem 0xa00a0074 32 0x001e0088
+devmem 0xa00a0078 32 0x00e10088
+devmem 0xa00a007c 32 0x001e0088
+devmem 0xa00a0080 32 0x026303ef
+devmem 0xa00a0084 32 0x02630088
+devmem 0xa00a0088 32 0x00e103ef
+devmem 0xa00a008c 32 0x067c03ef
+devmem 0xa00a0090 32 0x00e10088
+devmem 0xa00a0094 32 0x026303ef
+devmem 0xa00a0098 32 0x02630088
+devmem 0xa00a009c 32 0x001e0088
+devmem 0xa00a00a0 32 0x00e10088
+devmem 0xa00a00a4 32 0x001e00ff
 
 # ynr_cnr_cfg
-devmem 0x800900a8 32 0x00320014
+devmem 0xa00a00a8 32 0x00320014
 
 # yuv_sat_hue_cfg
-devmem 0x8009006c 32 0x0080005a
+devmem 0xa00a006c 32 0x0080005a
 
 
 
@@ -15163,6 +15167,82 @@ printf '\xEE\x60\x0A\xFF\xFC\xFF\xFF' > /dev/ttyPS1
 
 
 
+
+```
+
+
+
+
+
+# yavta
+
+```
+yavta --help
+Usage: yavta [options] device
+Supported options:
+-B, --buffer-type               Buffer type ("capture", "output",
+                                "capture-mplane" or "output-mplane")
+-c, --capture[=nframes]         Capture frames
+-C, --check-overrun             Verify dequeued frames for buffer overrun
+-d, --delay                     Delay (in ms) before requeuing buffers
+-f, --format format             Set the video format
+-F, --file[=name]               Read/write frames from/to disk
+        For video capture devices, the first '#' character in the file name is
+        expanded to the frame sequence number. The default file name is
+        'frame-#.bin'.
+-h, --help                      Show this help screen
+-i, --input input               Select the video input
+-I, --fill-frames               Fill frames with check pattern before queuing them
+-l, --list-controls             List available controls
+-n, --nbufs n                   Set the number of video buffers
+-p, --pause                     Pause before starting the video stream
+-q, --quality n                 MJPEG quality (0-100)
+-r, --get-control ctrl          Get control 'ctrl'
+-R, --realtime=[priority]       Enable realtime RR scheduling
+-s, --size WxH                  Set the frame size
+-t, --time-per-frame num/denom  Set the time per frame (eg. 1/25 = 25 fps)
+-u, --userptr                   Use the user pointers streaming method
+-w, --set-control 'ctrl value'  Set control 'ctrl' to 'value'
+    --enum-formats              Enumerate formats
+    --enum-inputs               Enumerate inputs
+    --fd                        Use a numeric file descriptor insted of a device
+    --field                     Interlaced format field order
+    --no-query                  Don't query capabilities on open
+    --offset                    User pointer buffer offset from page start
+    --requeue-last              Requeue the last buffers before streamoff
+    --timestamp-source          Set timestamp source on output buffers [eof, soe]
+    --skip n                    Skip the first n frames
+    --sleep-forever             Sleep forever after configuring the device
+    --stride value              Line stride in bytes
+
+```
+
+`-c`后面不能有空格
+
+```
+yavta -n3 -c15 -f  RGB24 -s1280x720 --skip 12 -F /dev/video0
+
+Dump Frames using Yavta
+
+yavta --enum-formats /dev/video0
+
+v4l2-ctl -d /dev/video0 -D --list-formats-ext
+
+
+
+yavta -n 3 -c10 -f NV12 -s 1920x1080 --skip 7 -F /dev/video1
+
+yavta -n 3 -c15 -f UYVY -s 3840x2160 --skip 12 -F /dev/video0
+
+yavta -c10 -f YUYV -s 3840x2160 --skip 7 -F /dev/video0 &
+
+yavta -c10 -f UYVY -s 3840x2160 --skip 7 -F /dev/video0 &
+
+
+media-ctl -d /dev/media1 -p
+yavta -l /dev/v4l-subdev5
+To change the TPG output pattern following command can be used:
+yavta --no-query -w '0x009f0903 4' /dev/v4l-subdev5
 
 ```
 
