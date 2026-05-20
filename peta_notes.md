@@ -14570,7 +14570,8 @@ Setting pipeline to PLAYING ...
 0:00:00.363849950  1008 0xaaaaede3ed80 WARN                 basesrc gstbasesrc.c:3127:gst_base_src_loop:<v4l2src0> error: Internal data stream error.
 0:00:00.363884440  1008 0xaaaaede3ed80 WARN                 basesrc gstbasesrc.c:3127:gst_base_src_loop:<v4l2src0> error: streaming stopped, reason not-negotiated (-4)
 
-
+# imx678 摄像头增益
+i2ctransfer -y -a -f 0 w3@0x1a 0x30 0x70 0x40
 
 zirui_isp 的初始化设置
 # dpc_cfg
@@ -14608,7 +14609,7 @@ devmem 0xa00a005c 32 0x00020870
 # gc_cfg
 devmem 0xa00a0060 32 0x80000000
 
-# rgb_dzc_btc_ctc_cfg
+# rgb_7dzc_btc_ctc_cfg
 devmem 0xa00a0068 32 0x010a0aff
 
 # pro_cfg
@@ -15248,6 +15249,60 @@ yavta --no-query -w '0x009f0903 4' /dev/v4l-subdev5
 ```
 
 
+
+# `ldd for busybox`
+
+```
+LD_TRACE_LOADED_OBJECTS=1 ./vcu_qt
+        linux-vdso.so.1 (0x0000ffff8b85a000)
+        libvcu_apm.so.0 => /usr/lib/libvcu_apm.so.0 (0x0000ffff8b811000)
+        libvcu_gst.so.0 => /usr/lib/libvcu_gst.so.0 (0x0000ffff8b7ec000)
+        libvcu_video.so.0 => /usr/lib/libvcu_video.so.0 (0x0000ffff8b7cd000)
+        libglib-2.0.so.0 => /usr/lib/libglib-2.0.so.0 (0x0000ffff8b67d000)
+        libQt5Charts.so.5 => /usr/lib/libQt5Charts.so.5 (0x0000ffff8b487000)
+        libQt5Widgets.so.5 => /usr/lib/libQt5Widgets.so.5 (0x0000ffff8ad75000)
+        libQt5Qml.so.5 => /usr/lib/libQt5Qml.so.5 (0x0000ffff8a8bf000)
+        libQt5Network.so.5 => /usr/lib/libQt5Network.so.5 (0x0000ffff8a6e6000)
+        libQt5Core.so.5 => /usr/lib/libQt5Core.so.5 (0x0000ffff8a0a1000)
+        libstdc++.so.6 => /usr/lib/libstdc++.so.6 (0x0000ffff89e87000)
+        libgcc_s.so.1 => /lib/libgcc_s.so.1 (0x0000ffff89e62000)
+        libc.so.6 => /lib/libc.so.6 (0x0000ffff89cbb000)
+        /lib/ld-linux-aarch64.so.1 (0x0000ffff8b826000)
+        libgstvideo-1.0.so.0 => /usr/lib/libgstvideo-1.0.so.0 (0x0000ffff89bf3000)
+        libgstbase-1.0.so.0 => /usr/lib/libgstbase-1.0.so.0 (0x0000ffff89b65000)
+        libgstreamer-1.0.so.0 => /usr/lib/libgstreamer-1.0.so.0 (0x0000ffff899f9000)
+        libgobject-2.0.so.0 => /usr/lib/libgobject-2.0.so.0 (0x0000ffff89988000)
+        libdrm.so.2 => /usr/lib/libdrm.so.2 (0x0000ffff89962000)
+        libv4l2.so.0 => /usr/lib/libv4l2.so.0 (0x0000ffff89943000)
+        libmediactl.so.0 => /usr/lib/libmediactl.so.0 (0x0000ffff8992b000)
+        libv4l2subdev.so.0 => /usr/lib/libv4l2subdev.so.0 (0x0000ffff89913000)
+        libasound.so.2 => /usr/lib/libasound.so.2 (0x0000ffff897f2000)
+        libpcre.so.1 => /usr/lib/libpcre.so.1 (0x0000ffff8977c000)
+        libQt5Gui.so.5 => /usr/lib/libQt5Gui.so.5 (0x0000ffff890e9000)
+        libm.so.6 => /lib/libm.so.6 (0x0000ffff89052000)
+        libz.so.1 => /lib/libz.so.1 (0x0000ffff8902b000)
+        libpcre2-16.so.0 => /usr/lib/libpcre2-16.so.0 (0x0000ffff88fce000)
+        libzstd.so.1 => /usr/lib/libzstd.so.1 (0x0000ffff88ece000)
+        liborc-0.4.so.0 => /usr/lib/liborc-0.4.so.0 (0x0000ffff88e37000)
+        libgmodule-2.0.so.0 => /usr/lib/libgmodule-2.0.so.0 (0x0000ffff88e21000)
+        libffi.so.8 => /usr/lib/libffi.so.8 (0x0000ffff88e07000)
+        libpthread.so.0 => /lib/libpthread.so.0 (0x0000ffff88df5000)
+        libv4lconvert.so.0 => /usr/lib/libv4lconvert.so.0 (0x0000ffff88d6d000)
+        librt.so.1 => /lib/librt.so.1 (0x0000ffff88d5b000)
+        libjpeg.so.62 => /usr/lib/libjpeg.so.62 (0x0000ffff88cfc000)
+        libudev.so.1 => /lib/libudev.so.1 (0x0000ffff88cb4000)
+        libMali.so.9 => /usr/lib/libMali.so.9 (0x0000ffff88b05000)
+        libpng16.so.16 => /usr/lib/libpng16.so.16 (0x0000ffff88ac0000)
+        libX11.so.6 => /usr/lib/libX11.so.6 (0x0000ffff8896d000)
+        libXfixes.so.3 => /usr/lib/libXfixes.so.3 (0x0000ffff88954000)
+        libXext.so.6 => /usr/lib/libXext.so.6 (0x0000ffff88930000)
+        libXdamage.so.1 => /usr/lib/libXdamage.so.1 (0x0000ffff8891d000)
+        libdl.so.2 => /lib/libdl.so.2 (0x0000ffff8890b000)
+        libxcb.so.1 => /usr/lib/libxcb.so.1 (0x0000ffff888d1000)
+        libXau.so.6 => /usr/lib/libXau.so.6 (0x0000ffff888bb000)
+        libXdmcp.so.6 => /usr/lib/libXdmcp.so.6 (0x0000ffff888a4000)
+
+```
 
 
 
