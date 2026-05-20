@@ -15306,9 +15306,116 @@ LD_TRACE_LOADED_OBJECTS=1 ./vcu_qt
 
 
 
+# Qt程序运行速查
+
+````
 
 
 
+
+export QT_QPA_PLATFORM=eglfs
+export QT_QPA_GENERIC_PLUGINS=libinput
+export QT_QPA_ENABLE_TERMINAL_KEYBOARD=1
+export QT_QPA_EGLFS_INTEGRATION=eglfs_x11
+export DISPLAY=:0.0
+export QT_SCALE_FACTOR=1
+export OMX_ALLEGRO_PATH=/usr/lib/
+export HACK_ENC_LATENCY=1
+export HACK_DEC_LATENCY=5
+vi /etc/qt_kms.json
+
+:set paste
+
+```
+{
+  "device": "/dev/dri/card0",
+  "outputs": [
+    {
+      "name": "HDMI-A-1",
+      "mode": "3840x2160",
+      "format": "argb8888"
+    }
+  ],
+  "planes": [
+    {
+      "planeId": 37,
+      "zpos": 1
+    }
+  ]
+}
+```
+
+然后
+
+```
+export QT_QPA_EGLFS_KMS_CONFIG=/etc/qt_kms.json
+```
+modetest -M xlnx -s 41@39:3840x2160-60@AR24
+modetest -D a0060000.v_mix -s 41@39:3840x2160-60@AR24
+xinit /etc/X11/xinit/xinitrc -- /usr/bin/X :1 &
+export DISPLAY=:1
+
+/usr/share/examples/opengl/cube/cube
+/usr/share/examples/opengl/textures/textures
+/usr/share/examples/opengl/qopenglwindow/qopenglwindow
+
+
+
+
+
+
+
+# 最好用 eglfs_kms 而不是 eglfs_x11
+
+
+update-alternatives --install /usr/lib/libMali.so.9.0 libmali /usr/lib/wayland/libMali.so.9.0 90
+
+modetest -D a0060000.v_mix -s 41@39:3840x2160-60@AR24
+
+
+export QT_QPA_PLATFORM="eglfs"
+export QT_QPA_EGLFS_KMS_ATOMIC=1
+export QT_QPA_EGLFS_INTEGRATION="eglfs_kms"
+export QT_QPA_EGLFS_DEBUG="0"
+export QT_QPA_EGLFS_FORCE888=1
+
+
+````
+
+
+
+# 添加中文字体
+
+能找到 `components/yocto/layers/meta-openembedded/meta-oe/recipes-graphics/ttf-fonts/ttf-wqy-zenhei_0.9.45.bb`
+
+`components/yocto/conf/devtool.conf`的内容是
+
+```
+[General]
+bitbake_subdir = layers/core/bitbake
+init_path = layers/core/oe-init-build-env
+core_meta_subdir = layers/core/meta
+
+[SDK]
+sdk_targets = petalinux-image-minimal
+```
+
+镜像对应 `components/yocto/layers/meta-petalinux/recipes-core/images/petalinux-image-minimal.bb`
+
+`rootfs`菜单是对应具体的 `components/yocto/layers/core/meta`, 并没有依赖 `layers/meta-openembedded/meta-oe` 里的 `ttf-wqy-zenhei`
+
+也就是说 根据 目标镜像, 实际上没有用到`components/yocto/layers/meta-openembedded/meta-oe`. 所以不会看到`ttf-wqy-zenhei`
+
+
+应该在`project-spec/meta-user/recipes-graphics/ttf-fonts/`添加有关内容(`ttf.inc,ttf-wqy-zenhei_0.9.45.bb`), 可以从`components/yocto/layers/meta-openembedded/meta-oe/`抄过来
+
+然后在 `project-spec/meta-user/conf/user-rootfsconfig` 添加 `CONFIG_ttf-wqy-zenhei`, 这是在`rootfs`的配置里面添加用户定义选项
+
+最后在`project-spec/configs/rootfs_config`添加 `CONFIG_ttf-wqy-zenhei=y`, 这个是让选项生效
+
+在` build/tmp/deploy/rpm/noarch/ttf-wqy-zenhei-0.9.45-r0.0.noarch.rpm` 可以查看编译出来的单独` recipe `的打包文件
+
+可以在 `build/tmp/deploy/images/zynqmp-generic/petalinux-image-minimal-zynqmp-generic.tar.gz` 也就是 `images/linux/rootfs.tar.gz` 查看 文件系统是否添加了有关文件
 
 
 
