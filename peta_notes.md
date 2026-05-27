@@ -160,6 +160,14 @@ petalinux-build -c device-tree -x cleansstate
 petalinux-build -c device-tree -x do_compile	== petalinux-build -c device-tree
 ```
 
+### **构建加打包**
+
+```
+petalinux-build && petalinux-package --boot --u-boot --fpga --force
+```
+
+
+
 
 
 并行处理数量在`project-spec/configs/config`里配置
@@ -15374,12 +15382,19 @@ modetest -D a0060000.v_mix -s 41@39:3840x2160-60@AR24
 
 
 export QT_QPA_PLATFORM="eglfs"
+export QT_QPA_GENERIC_PLUGINS=libinput
+export QT_QPA_ENABLE_TERMINAL_KEYBOARD=1
 export QT_QPA_EGLFS_KMS_ATOMIC=1
 export QT_QPA_EGLFS_INTEGRATION="eglfs_kms"
 export QT_QPA_EGLFS_DEBUG="0"
 export QT_QPA_EGLFS_FORCE888=1
 
 
+
+
+
+update-alternatives --remove libmali /usr/lib/wayland/libMali.so.9.0
+update-alternatives --install /usr/lib/libMali.so.9.0 libmali /usr/lib/x11/libMali.so.9.0 90
 ````
 
 
