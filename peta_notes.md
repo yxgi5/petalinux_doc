@@ -70,12 +70,26 @@ petalinux-build -c linux-xlnx -x cleansstate
 petalinux-build -c device-tree -x cleansstate
 ```
 
+一次性执行
+
+```
+petalinux-build -c bootloader -x cleansstate && \
+petalinux-build -c fsbl-firmware -x cleansstate && \
+petalinux-build -c pmu-firmware -x cleansstate && \
+petalinux-build -c u-boot -x cleansstate && \
+petalinux-build -c linux-xlnx -x cleansstate && \
+petalinux-build -c device-tree -x cleansstate
 ```
 
+或者
+
+```
 for c in bootloader fsbl-firmware pmu-firmware u-boot linux-xlnx device-tree; do
     petalinux-build -c $c -x cleansstate
 done
 ```
+
+
 
 也可以`distclean`
 
@@ -3719,6 +3733,9 @@ rm -rf components/yocto/workspace/sources/linux-xlnx
 petalinux-devtool update-recipe linux-xlnx -a ${PWD}/project-spec/meta-user	# 每次commit会产生一个patch
 # + 修改完毕
 petalinux-devtool reset linux-xlnx 	# 这里让源码不生效而已, 但是不会自动删掉源码目录, 建议这里把`components/yocto/workspace/appends/linux-xlnx_2022.2.bbappend`自己备份一下, 如果需要载再修改, 就基于这个源码的修改的git, 再解开就是生效, 且之前的git提交还在
+
+# 再次从已经关闭的 modify 修改, 之需要加 -n 参数, 虽然已经reset或finish, 但是还没有删除, 就不能再释放
+petalinux-devtool modify linux-xlnx -n
 
 # if needed
 petalinux-build -x mrproper
@@ -11116,6 +11133,95 @@ dma_request_chan() failed, ret = -517
 
 ## `GUI` 图形层
 
+### `DTS`修改
+
+比如产生的原始节点
+```
+		crtc_hier_v_mix_0: v_mix@a0060000 {
+			clock-names = "ap_clk";
+			clocks = <&zynqmp_clk 74>;
+			compatible = "xlnx,v-mix-5.2", "xlnx,mixer-3.0", "xlnx,mixer-4.0", "xlnx,mixer-5.0";
+			interrupt-names = "interrupt";
+			interrupt-parent = <&gic>;
+			interrupts = <0 95 4>;
+			reg = <0x0 0xa0060000 0x0 0x10000>;
+			reset-gpios = <&processor_subsystem_rest_gpio 10 1>;
+			xlnx,bpc = <10>;
+			xlnx,dma-addr-width = <32>;
+			xlnx,num-layers = <5>;
+			xlnx,ppc = <2>;
+			crtc_mixer_portcrtc_hier_v_mix_0: port@0 {
+				reg = <0>;
+				mixer_crtccrtc_hier_v_mix_0: endpoint {
+					remote-endpoint = <&hdmi_output_v_hdmi_tx_ss_0crtc_hier_v_mix_0>;
+				};
+			};
+			xx_mix_mastercrtc_hier_v_mix_0: layer_0 {
+				dma-names = "dma0";
+				dmas = <&crtc_hier_v_frmbuf_rd_0 0>;
+				xlnx,layer-id = <0>;
+				xlnx,layer-max-height = <2160>;
+				xlnx,layer-max-width = <3840>;
+				xlnx,layer-primary ;
+				xlnx,layer-streaming ;
+				xlnx,vformat = "BG24";
+			};
+			xx_mix_overlay_1crtc_hier_v_mix_0: layer_1 {
+				xlnx,layer-id = <1>;
+				xlnx,layer-max-width = <1920>;
+				xlnx,vformat = "XV20";
+			};
+			xx_mix_overlay_2crtc_hier_v_mix_0: layer_2 {
+				xlnx,layer-id = <2>;
+				xlnx,layer-max-width = <1920>;
+				xlnx,vformat = "YUYV";
+			};
+			xx_mix_overlay_3crtc_hier_v_mix_0: layer_3 {
+				xlnx,layer-id = <3>;
+				xlnx,layer-max-width = <1920>;
+				xlnx,vformat = "UYVY";
+			};
+			xx_mix_overlay_4crtc_hier_v_mix_0: layer_4 {
+				xlnx,layer-alpha ;
+				xlnx,layer-id = <4>;
+				xlnx,layer-max-width = <1920>;
+				xlnx,layer-scale ;
+				xlnx,vformat = "AR24";
+			};
+			xx_mix_logocrtc_hier_v_mix_0: logo {
+				xlnx,layer-id = <5>;
+				xlnx,logo-height = <64>;
+				xlnx,logo-width = <64>;
+			};
+		};
+```
+
+
+
+怎么写 取消 `xlnx,layer-primary`? 使用 `delete-property` 删除属性
+```
+&xx_mix_mastercrtc_hier_v_mix_0 {
+    delete-property = "xlnx,layer-primary";
+};
+```
+怎么写 添加 `xlnx,layer-primary`? 直接写属性名即可
+```
+&xx_mix_overlay_4crtc_hier_v_mix_0 {
+    xlnx,layer-primary;
+};
+```
+
+怎么写 修改 `xlnx,layer-max-width`? 普通属性直接重新赋值即可，不需要 `delete-property`。
+```
+&xx_mix_overlay_4crtc_hier_v_mix_0 {
+    xlnx,layer-max-width = <3840>;
+};
+```
+
+
+
+
+
 ### 关于各图层输出`tpg`或`cam`的一些记录
 
 首先, 修正`v_mix`,  `AB24->AR24`.
@@ -11123,6 +11229,8 @@ dma_request_chan() failed, ret = -517
 其次, `dts`修正. 不用修改那么多
 
 默认 `/sys/module/xlnx_mixer/parameters/mixer_primary_enable` 是 `Y`就可以, 不用改, 只和显示不显示彩条有关. 实际上, 关掉的话`primary layer`就只有蓝色背景而不显示其他. 所以, 最好保持默认一直打开!
+
+补: 关于`layer0`, 要开`dma`选项, 才能有显示
 
 如果`xlnx,layer-primary`设置到比如`AR24`这一层
 
@@ -15340,7 +15448,7 @@ vi /etc/qt_kms.json
   "outputs": [
     {
       "name": "HDMI-A-1",
-      "mode": "3840x2160",
+      "mode": "3840x2160@30",
       "format": "argb8888"
     }
   ],
@@ -15399,6 +15507,79 @@ update-alternatives --install /usr/lib/libMali.so.9.0 libmali /usr/lib/x11/libMa
 
 
 
+参考 https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/18841928/Zynq+UltraScale+MPSoC+-+Graphics+Driver+Stack+-+Mali+400
+
+```
+export QT_LOGGING_RULES="qt.qpa.*=true"
+
+update-alternatives --remove libmali /usr/lib/libMali.so.9.0
+update-alternatives --install /usr/lib/libMali.so.9.0 libmali /usr/lib/fbdev/libMali.so.9.0 90
+
+export DISPLAY=:0.0
+export QT_QPA_EGLFS_INTEGRATION=eglfs_mali
+export QT_QPA_PLATFORM=eglfs::fb=/dev/fb0
+export QT_QPA_EGLFS_FB=/dev/fb0
+export QT_QPA_EGLFS_WIDTH=1920
+export QT_QPA_EGLFS_HEIGHT=1080
+export QT_QPA_GENERIC_PLUGINS=evdevmouse,evdevkeyboard
+export QT_QPA_ENABLE_TERMINAL_KEYBOARD=1
+export QT_QPA_FONTDIR=/usr/share/fonts/truetype
+export QT_QPA_PLATFORM_PLUGIN_PATH=/usr/lib/qt5/plugins
+export QML2_IMPORT_PATH=/usr/lib/qt5/qml
+
+
+
+/usr/share/examples/opengl/cube/cube
+/usr/share/examples/opengl/textures/textures
+/usr/share/examples/opengl/qopenglwindow/qopenglwindow
+
+
+
+update-alternatives --remove libmali /usr/lib/libMali.so.9.0
+update-alternatives --install /usr/lib/libMali.so.9.0 libmali /usr/lib/x11/libMali.so.9.0 90
+
+/usr/bin/X :0 &
+export QT_QPA_PLATFORM=xcb
+unset QT_QPA_EGLFS_INTEGRATION
+export DISPLAY=:0.0
+
+/usr/share/examples/opengl/cube/cube
+/usr/share/examples/opengl/textures/textures
+/usr/share/examples/opengl/qopenglwindow/qopenglwindow
+
+
+
+
+update-alternatives --remove libmali /usr/lib/libMali.so.9.0
+update-alternatives --install /usr/lib/libMali.so.9.0 libmali /usr/lib/wayland/libMali.so.9.0 90
+
+
+watch -n 0.2 cat /sys/kernel/debug/dri/0/state
+
+cat /sys/kernel/debug/dri/0/state
+
+Available platform plugins are: eglfs, linuxfb, minimal, minimalegl, offscreen, vnc, wayland-egl, wayland, xcb.
+
+
+
+devmem 0xa0060518 32 0x780
+devmem 0xa0060520 32 0x3c00
+devmem 0xa0060528 32 0x438
+devmem 0xa0060530 32 1
+
+xrandr --fb 1920x1080 --output HDMI-1 --mode 3840x2160 --rate 30
+
+
+
+
+
+
+```
+
+
+
+
+
 # 添加中文字体
 
 能找到 `components/yocto/layers/meta-openembedded/meta-oe/recipes-graphics/ttf-fonts/ttf-wqy-zenhei_0.9.45.bb`
@@ -15434,7 +15615,137 @@ sdk_targets = petalinux-image-minimal
 
 
 
+# 多路输出研究
 
+**PL-DP (DisplayPort 1.4 TX Subsystem) 的 Linux 驱动极其庞大且脆弱**。它严重依赖 Linux 的 DRM/KMS 框架、PHY 子系统（Video PHY）以及复杂的设备树绑定。在 Linux 下同时驱动 V-Mix、HDMI-TX 和 PL-DP-TX，会导致 Linux DRM 内部的 `CRTC` 到 `Encoder` 到 `Connector` 的拓扑结构异常复杂。
+
+**PL DisplayPort 1.4 TX Subsystem** 在 Linux DRM 下做 **live input**（从 PL 进视频）支持并不完善，尤其在较新 Petalinux 版本中经常有问题（驱动主要为 PS DP 硬核优化）。
+
+SDI-TX 有较好的 V4L2/DRM 支持，但多路独立 CRTC 会让 DRM 配置非常复杂（plane、encoder、connector 管理爆炸），资源（LUT/BRAM）也会快速消耗。
+
+**资源灾难：** 如果每一路都加一个 V-Mix（或者是带有 Multi-Layer 混合功能的 IP），PL 端的 BRAM、DSP 和逻辑资源会成倍飙升，ZynqMP 7EV 很容易吃不消。
+
+ 将 SDI-TX 和 PL-DP-TX 移交给 R5 裸机，直接通过 AXI-Lite 寄存器配置 VTC 和 PHY，绕过了 Linux 繁重的驱动框架，这不仅省去了海量的系统资源，还让多路输出的控制变得极其纯粹。
+
+
+
+**用 R5 配置非 HDMI 接口的思路**。这是很多工业/广播设备常见的异构方案：
+
+- A53/Linux 只管 HDMI（成熟 DRM pipeline）。
+- R5 裸机/RTOS 管 SDI + PL-DP 等实时性要求高的接口。
+
+```
+v_mix (AXIS)
+   ↓
+axis_broadcast
+   ├──> HDMI TX (Linux DRM 控制)
+   |
+   └──> axis2native (Slave mode + VTC)
+             ↓
+         Native Video Fanout (custom module)
+             ├──> native2axis → SDI TX (R5 配置)
+             ├──> native2axis → PL-DP TX (R5 配置)
+             └──> ... 其他输出
+```
+
+
+
+**现要点**：
+
+- R5 通过 **AXI-Lite** 访问对应 Subsystem 的寄存器（SDI TX Subsystem、DP14 TX Subsystem）。
+- 用 **OpenAMP / RPMsg** 或共享内存 + IPC 让 A53 通知 R5 “开始输出” 或交换配置参数。
+- native 域 fanout 验证
+
+
+
+
+
+目标是 4k60fps  YUV422-10bit
+
+native2axis的fifo大小我觉得要缓存几十行是不现实的, 所以只能实际验证一下, 这样结构后续的PL-DP和SDI有关的IP对数据的要求, 是否能够接收按标准4k时序转回aixs的数据(场间隔几十行时间无数据)
+
+
+
+保底的结构, 4K60 场景下“DDR 帧缓存”, 如果前面的结构确认不行才采用
+
+```
+v_mix (AXIS)
+   ↓
+axis_broadcast
+   ├──> HDMI TX (Linux DRM 控制)
+   |
+   └──> vdma write
+             ↓
+             ├vdma read ──> native2axis → SDI TX (R5 配置)
+             ├vdma read ──> native2axis → PL-DP TX (R5 配置)
+             └vdma read──> ... 其他输出
+```
+
+
+
+### 1. native2axis（Video In to AXI4-Stream）在垂直消隐期的行为
+
+**标准行为**：
+
+- v_vid_in_axi4s（Video In to AXI4-Stream）在 **Native Video 输入** 时，会严格按照输入的 timing 信号（vid_active_video、hsync、vsync、vblank 等）来产生 AXI-Stream。
+- 在 **垂直消隐期（Vertical Blanking）**，tvalid 会自然拉低几十行时间（对于 4K60，垂直 blanking 通常 40~100 行左右，取决于具体 timing）。
+- 它**不会**在 blanking 期间“凭空造数据”，也不会缓存几十行来填满——它就是**实时映射**。
+
+### 2. PL-DP 和 SDI-TX 对这种“标准 timing + blanking 间隙”数据的接受能力
+
+**SDI-TX Subsystem**：
+
+- **支持良好**。SDI TX 通常接受 **AXI4-Stream Video** 输入（带正确 SOF / EOL），并且内部有足够的缓冲来处理标准视频 blanking。
+- 很多广播级设计中，SDI TX 就是接在 native2axis 后面跑 4K60/12G-SDI 的。它对垂直 blanking 期间无数据是**预期行为**。
+- 但需要注意：必须保证 AXI-Stream 的 average bandwidth 满足 12G-SDI 的要求（YUV422-10bit 4K60 需要接近满载）。
+
+**PL-DP14 TX Subsystem (Live Input)**：
+
+- **支持，但更挑剔**。
+- DP TX Subsystem 支持 **Native Video** 和 **AXI4-Stream** 两种输入模式。
+- 在 AXI-Stream 模式下，它期望输入符合 **AXI4-Stream Video 协议**（带 tuser SOF），并且在 blanking 期 tvalid 拉低是**允许的**。
+- 然而，在 4K60 高速率下，如果上游数据有 jitter，或者 FIFO 管理不当，容易出现 underrun（尤其是 link training 后对 timing 要求严格）。
+
+**结论**：**两者原则上都能接收“标准 4K timing + 垂直 blanking 期间无数据”的输入**，这是视频 IP 的标准工作模式。但在 4K60 YUV422-10bit 下，**裕量非常小**，任何小的时钟偏差、FIFO 管理不当、或 backpressure 都会立刻暴露。
+
+### 3. FIFO 大小与实际可行性
+
+你说得对——**缓存几十行在 native2axis 阶段非常不现实**（BRAM 消耗巨大，且延迟会很高）。
+
+**推荐做法**（按优先级）：
+
+1. 最小改动方案（推荐先验证）
+
+   ：
+
+   - axis2video（主路分支）用 **Slave timing mode** + 较大 FIFO（128~256）。
+   - Native Fanout 保持简单（寄存器级 fanout）。
+   - 每路 native2axis 后立即接 **AXI-Stream FIFO**（深度 8192~16384，视资源而定），**不要依赖 native2axis 本身的 FIFO**。
+   - 这个 FIFO 主要吸收小抖动和 blanking 期的速率匹配。
+
+2. 更稳妥方案
+
+   （强烈建议用于 4K60）：
+
+   - 在 Native 域 fanout 之后，每路增加一个**小 Native FIFO**（几行深度，用 Block RAM 实现 line buffer）。
+   - 或者直接在每路接 **Video Frame Buffer**（VDMA 或 VFB）做一帧缓冲（代价是增加 1 帧延迟，但最稳）。
+
+3. 时钟规划
+
+   ：
+
+   - 所有输出建议用**同一个 video clock**（或频率完全一致的时钟）。
+   - 4K60 YUV422-10bit 需要 pixel clock ≈ 594 MHz（或 4ppc @ ~150MHz），时钟质量非常关键。
+
+
+
+### 4. 验证建议
+
+- 先只做 **HDMI + 单路 SDI** 通路，跑 4K60，观察 SDI 输出是否稳定（用 SDI 监视器或 analyzer 看 underrun/error）。
+- 再加 PL-DP 路。
+- 在 R5 侧监控对应 IP 的 status 寄存器（underrun、overflow、locked 等）。
+
+总体判断：结构可行，但在 4K60 下属于“高难度”模式，需要仔细做带宽计算和时序收敛。很多类似项目最终都会在每路加一定深度的 FIFO 或 Frame Buffer 来保险。
 
 
 
