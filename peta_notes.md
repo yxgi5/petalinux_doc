@@ -329,6 +329,68 @@ BSP 是怎么“做”出来的?
 
 
 
+## 直接修改已生成的 rootfs 镜像
+
+### 情况 A：如果使用的是 CPIO 格式 (rootfs.cpio.gz)
+
+‌**进入输出目录**
+
+```
+cd <plnx-proj-root>/images/linux
+```
+
+**解压 rootfs**
+
+```
+mkdir temp_rootfs
+cd temp_rootfs
+gunzip -c ../rootfs.cpio.gz | cpio -idmv
+```
+
+**修改文件**
+
+‌**重新打包**
+
+```
+find . | cpio -H newc -o | gzip -9 > ../rootfs.cpio.gz.new
+mv ../rootfs.cpio.gz.new ../rootfs.cpio.gz
+cd ..
+rm -rf temp_rootfs
+```
+
+**重新生成镜像**
+
+如果 `BOOT.BIN` 或 `image.ub` 包含了旧的 rootfs，需要重新打包启动镜像
+
+```
+petalinux-package --boot --fsbl --fpga --u-boot --force
+```
+
+### 情况 B：如果使用的是 EXT4 格式 (rootfs.ext4)
+
+**挂载镜像**
+
+```
+sudo mkdir /mnt/rootfs
+sudo mount -o loop <plnx-proj-root>/images/linux/rootfs.ext4 /mnt/rootfs
+```
+
+**修改文件**
+
+**卸载镜像**
+
+```
+sudo umount /mnt/rootfs
+```
+
+‌**重新打包**
+
+```
+petalinux-package --boot --fsbl --fpga --u-boot --force
+```
+
+
+
 
 
 # `minicom`
@@ -789,7 +851,8 @@ the_ROM_image:
 petalinux-package --boot --fsbl --u-boot --kernel --force
 ```
 
-需要修改 `CONFIG_SUBSYSTEM_FLASH_PSU_QSPI_0_BANKLESS_PART0_SIZE=0x1B0000`
+~~需要修改 `CONFIG_SUBSYSTEM_FLASH_PSU_QSPI_0_BANKLESS_PART0_SIZE=0x1B0000`~~
+
 ```bash
 $ petalinux-package --boot --fsbl --u-boot --kernel --force
 [INFO] Sourcing buildtools
@@ -811,13 +874,15 @@ INFO: Generating zynqmp binary package BOOT.BIN...
 [ERROR]  : Section image.ub.0 offset of 0x100000 overlaps with prior section end address of 0x1A4880
 ERROR: Fail to create BOOT image
 ```
-其实还是超大, 怎么还是和前面那个一样大呢?
+~~其实还是超大, 怎么还是和前面那个一样大呢?~~
+
 ```bash
 du -b images/linux/BOOT.BIN | awk '{print substr($1,$2)}' | xargs -I {} printf "0x%x\n" {} 
 0x3e80adc
 ```
 
-计算一下
+~~计算一下~~
+
 ```bash
 zynqmp_fsbl.elf     462.4KB
 pmufw.elf           496.6KB
@@ -827,9 +892,10 @@ u-boot.elf            9.3MB
 image.ub             35.4MB
 boot.scr              2.8KB
 ```
-总大小肯定没有超过
+~~总大小肯定没有超过~~
 
-自动产生的bootgen.bif文件
+~~自动产生的bootgen.bif文件~~
+
 ```bash
 the_ROM_image:
 {
@@ -842,22 +908,24 @@ the_ROM_image:
 	[destination_cpu=a53-0, offset=0x3E80000, partition_owner=uboot] /home/andy/workdir/zirui/04_hdmi_tx/mini_peta/petalinux/images/linux/boot.scr
 }
 ```
-最后那个boot.scr给的地址太大了
+~~最后那个boot.scr给的地址太大了~~
 
-## 显示某文件的十六进制大小
+## 计算并显示某文件的十六进制大小
 
 ```bash
 du -b images/linux/image.ub | awk '{print substr($1,$2)}' | xargs -I {} printf "0x%x\n" {} 
 0x21ba510
 ```
 
-计算boot.scr偏移
+~~计算boot.scr偏移~~
+
 ```bash
 1b0000+21ba510=236A510
 ```
-取0x2400000
+~~取0x2400000~~
 
-修改bootgen.bif文件
+~~修改bootgen.bif文件~~
+
 ```bash
 the_ROM_image:
 {
@@ -871,6 +939,22 @@ the_ROM_image:
 }
 
 ```
+
+
+## 关键设置
+
+修改project-spec/configs/config里这几个
+
+```bash
+CONFIG_SUBSYSTEM_FLASH_PSU_QSPI_0_BANKLESS_PART0_SIZE=0x1B0000
+CONFIG_SUBSYSTEM_UBOOT_QSPI_FIT_IMAGE_OFFSET=0x1B0000
+CONFIG_SUBSYSTEM_UBOOT_QSPI_FIT_IMAGE_SIZE=0x2200000
+```
+
+最终限制是`qspi falsh`的容量, 这样就要根据原始大小调整文件地址分布
+
+
+
 ## 通过vitis命令产生 BOOT.BIN
 
 新开一个terminal
@@ -882,6 +966,8 @@ du -b images/linux/BOOT.BIN | awk '{print substr($1,$2)}' | xargs -I {} printf "
 0x2400adc
 ```
 这次大小总算合适了
+
+
 
 ## 通过vitis命令烧写
 
@@ -940,7 +1026,7 @@ build/tmp/work/zynqmp_generic-xilinx-linux/u-boot-xlnx/v2021.01-xilinx-v2022.2+g
 build/tmp/work/zynqmp_generic-xilinx-linux/u-boot-xlnx/v2021.01-xilinx-v2022.2+gitAUTOINC+b31476685d-r0/git/board/xilinx/Kconfig:	default 0x3E80000 if ARCH_ZYNQMP
 
 ```
-可见, u-boot 的 CONFIG_BOOT_SCRIPT_OFFSET 是关键
+可见, u-boot 的 CONFIG_BOOT_SCRIPT_OFFSET 是关键 ( abort )
 
 ```bash
 petalinux-config -c u-boot
@@ -1037,19 +1123,19 @@ Offset exceeds device limit
 
 打包命令 会产生 `petalinux/images/linux/bootgen.bif` 文件, 核对其中偏移量
 
-一般需要修改这几个
+一般需要修改project-spec/configs/config里这几个
 ```bash
 CONFIG_SUBSYSTEM_FLASH_PSU_QSPI_0_BANKLESS_PART0_SIZE=0x1B0000
 CONFIG_SUBSYSTEM_UBOOT_QSPI_FIT_IMAGE_OFFSET=0x1B0000
 CONFIG_SUBSYSTEM_UBOOT_QSPI_FIT_IMAGE_SIZE=0x2200000
 ```
-`u-boot`的`Boot script offset`在2022.2这个版本覆盖定义之后似乎没有起作用, 如果实在要重定义, 手动用`vitis`命令配合修改的`bootgen.bif`产生打包文件
+`u-boot`的`Boot script offset`在2022.2这个版本覆盖定义之后似乎没有起作用. 如果实在要重定义, 手动用`vitis`命令配合修改的`bootgen.bif`产生打包文件
 
 `fitimage_name=image.ub`, 而且要核对`petalinux/images/linux/boot.scr`对应启动方式的偏移量和大小. 可以通过`u-boot`有关命令进行验证
 
-通过`petalinux-config`流程 或者 手动修改再通过等效命令 都可以产生最终的烧写文件.
+通过前面的几个步骤就可以产生最终的单一烧写镜像文件. 可以烧写到`qspi flash`, 启动之后可以对`emmc`进行刷写(目标板子没有留`sd`卡接口).
 
-目的是为了对`emmc`进行刷写(目标板子没有留`sd`卡接口).
+如果`emmc`的系统挂了, 这个办法去抢救是最好的了.
 
 
 
@@ -3710,7 +3796,7 @@ MODULE_PARM_DESC(mixer_primary_enable, "Enable mixer primary plane (default: 1)"
 
 
 
-#### 修改内核源码
+#### **修改内核源码**
 
 ```bash
 petalinux-devtool modify linux-xlnx
@@ -14754,6 +14840,33 @@ devmem 0xa00a00a8 32 0x00320014
 devmem 0xa00a006c 32 0x0080005a
 
 
+# 读取一片地址区
+for i in {0..100..1}; do addr=$(printf "0x%08X" $((0xA0200000 + i*4))); echo "$addr: $(devmem $addr)"; done
+==
+for i in {0..100}; do
+    addr=$(printf "0x%08X" $((0xA0200000 + i*4)))
+    val=$(devmem $addr)
+    echo "$addr: $val"
+done
+==
+base=0xA0200000
+
+for i in {0..100}; do
+    addr=$((base + i*4))
+    printf "0x%08X: %s\n" $addr "$(devmem $addr)"
+done
+==
+base=0xA0200000
+
+printf "ADDR        VALUE\n"
+printf "------------ --------\n"
+
+for i in {0..100}; do
+    addr=$((base + i*4))
+    printf "0x%08X  %s\n" $addr "$(devmem $addr)"
+done
+
+
 
 
 
@@ -14971,7 +15084,7 @@ Device topology
 
 
 
-摄像头进来的是30fps, 而不是60fps
+### 摄像头进来的是30fps, 而不是60fps
 
 ```
 devmem 0xA0020000 w 0xFFFFFFFD
@@ -14994,7 +15107,89 @@ i2ctransfer -f -a -y 0 w3@0x1A 0x30 0x00 0x00
 
 修改`thcv24xap_imx678.c`, 出一个补丁即可
 
+### 缩小显示
 
+```
+modetest -M xlnx -s 41@39:3840x2160-60@AR24
+
+modetest -D a0060000.v_mix -s 41@39:3840x2160-60@AR24
+
+media-ctl -d /dev/media0 -V "\"thcv24xap_imx678 0-001a\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":1 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"zirui-isp\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"zirui-isp\":1 [fmt:VUY10_1X30/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_proc_ss\":0 [fmt:VUY10_1X30/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_proc_ss\":1 [fmt:UYVY8_1X16/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0300000.v_proc_ss\":0 [fmt:UYVY8_1X16/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0300000.v_proc_ss\":1 [fmt:UYVY8_1X16/3840x2160 field:none]"
+media-ctl -d /dev/media0 -p
+
+gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=4 ! video/x-raw, width=3840, height=2160, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink driver-name=xlnx plane-id=36 fullscreen-overlay=0
+gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=4 ! video/x-raw, width=3840, height=2160, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink bus-id=a0060000.v_mix plane-id=36 fullscreen-overlay=0
+GST_DEBUG=3 gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=4 ! video/x-raw, width=3840, height=2160, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink bus-id=a0060000.v_mix plane-id=36 fullscreen-overlay=0
+
+echo 0x1f > /sys/module/videobuf2_common/parameters/debug
+v4l2-ctl -d /dev/video0 --stream-mmap --verbose 
+
+media-ctl -d /dev/media0 -V "\"a0300000.v_proc_ss\":1 [fmt:UYVY8_1X16/1920x1080 field:none]"
+GST_DEBUG=3 gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=4 ! video/x-raw, width=1920, height=1080, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink bus-id=a0060000.v_mix plane-id=36 fullscreen-overlay=0
+
+media-ctl -d /dev/media0 -V "\"a0300000.v_proc_ss\":1 [fmt:UYVY8_1X16/960x540 field:none]"
+GST_DEBUG=3 gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=4 ! video/x-raw, width=960, height=540, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink bus-id=a0060000.v_mix plane-id=36 fullscreen-overlay=0
+
+media-ctl -d /dev/media0 -V "\"a0300000.v_proc_ss\":1 [fmt:UYVY8_1X16/768x432 field:none]"
+GST_DEBUG=3 gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=4 ! video/x-raw, width=768, height=432, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink bus-id=a0060000.v_mix plane-id=36 fullscreen-overlay=0
+
+media-ctl -d /dev/media0 -V "\"a0300000.v_proc_ss\":1 [fmt:UYVY8_1X16/640x480 field:none]"
+GST_DEBUG=3 gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=4 ! video/x-raw, width=640, height=480, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink bus-id=a0060000.v_mix plane-id=36 fullscreen-overlay=0
+```
+
+上面实现了缩小, 基本上可以(实在很小的就会出现错位). 但是放大显然不行
+
+```
+modetest -M xlnx -s 41@39:3840x2160-60@AR24
+
+modetest -D a0060000.v_mix -s 41@39:3840x2160-60@AR24
+
+media-ctl -d /dev/media0 -V "\"thcv24xap_imx678 0-001a\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0070000.mipi_csi2_rx_subsystem\":1 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"zirui-isp\":0 [fmt:SRGGB10_1X10/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"zirui-isp\":1 [fmt:VUY10_1X30/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_proc_ss\":0 [fmt:VUY10_1X30/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_proc_ss\":1 [fmt:UYVY8_1X16/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0300000.v_proc_ss\":0 [fmt:UYVY8_1X16/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0300000.v_proc_ss\":1 [fmt:UYVY8_1X16/3840x2160 field:none]"
+media-ctl -d /dev/media0 -p
+
+
+media-ctl -d /dev/media0 -V "\"a0300000.v_proc_ss\":1 [fmt:UYVY8_1X16/7680x4320 field:none]"
+GST_DEBUG=3 gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=4 ! video/x-raw, width=7680, height=4320, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink bus-id=a0060000.v_mix plane-id=36 fullscreen-overlay=0
+
+GST_DEBUG=3 gst-launch-1.0 -v v4l2src device="/dev/video0" io-mode=4 ! video/x-raw, width=3840, height=2160, framerate=60/1, format=UYVY! queue max-size-bytes=0 ! kmssink bus-id=a0060000.v_mix plane-id=36 fullscreen-overlay=0
+
+
+vbltest -D a0060000.v_mix
+trying to open device 'i915'...done
+starting count: 41761
+freq: 60.68Hz
+freq: 60.01Hz
+freq: 60.01Hz
+```
+
+也就是估计必须crop之后再放大到4k才能实现放大了. 这又涉及到, 是否必须把crop ip作为v4l-subdev? 
+
+```
+media-ctl -d /dev/media0 -V "\"a0080000.v_proc_ss\":0 [fmt:VUY10_1X30/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0080000.v_proc_ss\":1 [fmt:UYVY8_1X16/3840x2160 field:none]"
+media-ctl -d /dev/media0 -V "\"a0300000.v_proc_ss\":0 [fmt:UYVY8_1X16/1920x1080 field:none]"
+media-ctl -d /dev/media0 -V "\"a0300000.v_proc_ss\":1 [fmt:UYVY8_1X16/3840x2160 field:none]"
+```
+
+这样gst是报错的.
+
+不确定的是: 如果在scaler之前添加自定义的crop, 如果不给crop做一个v4l-subdev驱动而是直接做个普通的char设备驱动, 是否能行?
 
 # `DSI TX`
 
