@@ -15969,3 +15969,52 @@ axis_broadcast
 
 
 
+# delete-node 笔记
+
+冒号左边才是 label !!!
+
+节点本身有 label：
+
+```
+foo: vcap_mipi_csi2_rx_v_proc_ss_scaler {
+};
+```
+
+才能
+
+```
+/delete-node/ &foo;
+```
+
+如果没有label, 放在父节点内部
+
+```
+&amba_pl {
+    /delete-node/ vcap_mipi_csi2_rx_v_proc_ss_scaler;
+};
+```
+
+
+
+# PL来源中断号
+
+```
+0   89
+1   90
+2   91
+3   92
+4   93
+5   94
+6   95
+7   96
+
+8   104
+9   105
+10  106
+11  107
+12  108
+13  109
+14  110
+15  111
+```
+
