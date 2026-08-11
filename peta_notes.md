@@ -89,12 +89,19 @@ for c in bootloader fsbl-firmware pmu-firmware u-boot linux-xlnx device-tree; do
 done
 ```
 
-
-
 也可以`distclean`
 
 ```
 petalinux-build -c bootloader -x distclean
+```
+
+这样还不行, 可以检查是否打开了内核等源码编译但没有提交patch的情况
+
+```
+petalinux-devtool status
+petalinux-devtool update-recipe linux-xlnx -a ${PWD}/project-spec/meta-user
+petalinux-devtool reset linux-xlnx
+petalinux-devtool modify linux-xlnx -n
 ```
 
 
@@ -16017,4 +16024,418 @@ foo: vcap_mipi_csi2_rx_v_proc_ss_scaler {
 14  110
 15  111
 ```
+
+
+
+
+
+# vcu测试
+
+```
+echo "" | modetest -D a0060000.v_mix -s 39@37:3840x2160-60@AR24
+
+
+/* Memory SCD: VCU-decoder -> SCD -> VCU-Encoder */
+gst-launch-1.0 filesrc location=input_4k.mp4 ! qtdemux ! h264parse ! omxh264dec ! queue ! xilinxscd io-mode=5 ! queue ! omxh264enc target-bitrate=20000 control-rate=2 cpb-size=5000 ! filesink location=output_4k.mp4
+
+
+
+
+GST_DEBUG=3 \
+gst-launch-1.0 -v \
+v4l2src device="/dev/video0" io-mode=4 ! \
+video/x-raw, width=3840, height=2160, framerate=60/1, format=NV16_10LE32! \
+queue ! \
+xilinxscd io-mode=5 ! \
+queue ! \
+omxh264enc target-bitrate=20000 control-rate=2 cpb-size=5000 ! \
+filesink location=output_4k.mp4
+
+
+GST_DEBUG=3 \
+gst-launch-1.0 -v \
+v4l2src device="/dev/video0" io-mode=4 ! \
+video/x-raw, width=3840, height=2160, framerate=60/1, format=NV16_10LE32! \
+queue ! \
+xilinxscd io-mode=5 ! \
+queue ! \
+omxh265enc target-bitrate=20000 control-rate=2 cpb-size=5000 ! \
+filesink location=output_4k.mp4
+
+
+GST_DEBUG=3 \
+gst-launch-1.0 -v \
+v4l2src device="/dev/video0" io-mode=4 ! \
+video/x-raw, width=3840, height=2160, framerate=60/1, format=NV16_10LE32! \
+queue max-size-bytes=0 ! \
+kmssink bus-id=a0060000.v_mix plane-id=34 fullscreen-overlay=0 \
+>/dev/null 2>&1 &
+
+
+
+
+
+
+
+
+
+
+
+GST_DEBUG=3 \
+gst-launch-1.0 -v \
+v4l2src device="/dev/video0" io-mode=4 ! \
+video/x-raw, width=3840, height=2160, framerate=60/1, format=NV16_10LE32! \
+queue ! \
+xilinxscd io-mode=5 ! \
+queue ! \
+omxh265enc target-bitrate=20000 control-rate=2 cpb-size=5000 ! \
+filesink location=output_4k.mp4
+
+
+GST_DEBUG=3 \
+gst-launch-1.0 -v \
+v4l2src device="/dev/video0" io-mode=4 ! \
+video/x-raw, width=3840, height=2160, framerate=60/1, format=NV16_10LE32! \
+queue max-size-bytes=0 ! \
+kmssink bus-id=a0060000.v_mix plane-id=34 fullscreen-overlay=0 \
+>/dev/null 2>&1 &
+
+
+
+
+
+
+
+
+
+# 保护显示流畅 leaky=downstream 编码跟不上时，丢帧
+GST_DEBUG=3 \
+gst-launch-1.0 -v \
+v4l2src device="/dev/video0" io-mode=4 ! \
+video/x-raw,width=3840,height=2160,framerate=60/1,format=NV16_10LE32 ! \
+tee name=t \
+t. ! queue max-size-buffers=4 leaky=downstream ! \
+xilinxscd io-mode=5 ! \
+omxh265enc target-bitrate=20000 control-rate=2 cpb-size=5000 ! \
+filesink location=output_4k.mp4 \
+t. ! queue max-size-buffers=4 leaky=downstream ! \
+kmssink bus-id=a0060000.v_mix plane-id=34 fullscreen-overlay=0
+
+
+
+# encoder 卡一下，会直接堵住显示
+GST_DEBUG=3 \
+gst-launch-1.0 -v \
+v4l2src device="/dev/video0" io-mode=4 ! \
+video/x-raw,width=3840,height=2160,framerate=60/1,format=NV16_10LE32 ! \
+tee name=t \
+t. ! queue max-size-buffers=4 ! \
+xilinxscd io-mode=5 ! \
+omxh265enc target-bitrate=20000 control-rate=2 cpb-size=5000 ! \
+filesink location=output_4k.mp4 \
+t. ! queue max-size-buffers=4 leaky=downstream ! \
+kmssink bus-id=a0060000.v_mix plane-id=34 fullscreen-overlay=0
+
+
+
+
+
+
+
+# 录像30fps，显示60fps
+GST_DEBUG=3 \
+gst-launch-1.0 -v \
+v4l2src device="/dev/video0" io-mode=4 ! \
+video/x-raw,width=3840,height=2160,framerate=60/1,format=NV16_10LE32 ! \
+tee name=t \
+t. ! queue max-size-buffers=8 ! \
+videorate ! \
+video/x-raw,framerate=30/1 ! \
+xilinxscd io-mode=5 ! \
+omxh265enc target-bitrate=12000 control-rate=2 cpb-size=3000 ! \
+filesink location=output_4k_30fps.mp4 \
+t. ! queue max-size-buffers=4 leaky=downstream ! \
+kmssink bus-id=a0060000.v_mix plane-id=34 fullscreen-overlay=0
+
+
+
+# 开始的几秒马赛克严重, 后面就好了
+GST_DEBUG=3 \
+gst-launch-1.0 -v \
+v4l2src device="/dev/video0" io-mode=4 ! \
+video/x-raw,width=3840,height=2160,framerate=60/1,format=NV16_10LE32 ! \
+tee name=t \
+t. ! queue max-size-buffers=4 leaky=downstream ! \
+xilinxscd io-mode=5 ! \
+videorate ! \
+video/x-raw,framerate=30/1 ! \
+omxh265enc num-slices=8 prefetch-buffer=true target-bitrate=12000 control-rate=2 cpb-size=3000 ! \
+filesink location=output_4k_30fps.mp4 \
+t. ! queue max-size-buffers=4 leaky=downstream ! \
+kmssink bus-id=a0060000.v_mix plane-id=34 fullscreen-overlay=0
+
+
+
+
+
+
+```
+
+`VCU`只是视频编码压缩解码什么的加速, 存照片就软件实现
+
+```
+gst-launch-1.0 -v \
+v4l2src device="/dev/video0" num-buffers=1 io-mode=4 ! \
+video/x-raw,width=3840,height=2160,format=NV16_10LE32 ! \
+videoconvert ! \
+jpegenc ! \
+filesink location=frame.jpg
+```
+
+实现一个软核?
+
+https://blog.csdn.net/weixin_42593549/article/details/149558834
+
+https://opencores.org/projects/jpegencode
+
+https://opencores.org/projects/mkjpeg
+
+
+
+
+
+
+
+# QT显示再研究
+
+`f9e7244c@hmi_screen`
+
+```
+systemctl stop getty@tty1.service
+
+update-alternatives --remove libmali /usr/lib/libMali.so.9.0
+update-alternatives --install /usr/lib/libMali.so.9.0 libmali /usr/lib/fbdev/libMali.so.9.0 90
+
+export QT_QPA_PLATFORM=linuxfb:fb=/dev/fb0
+/usr/share/examples/widgets/widgets/calculator/calculator   可以
+/usr/share/examples/opengl/qopenglwindow/qopenglwindow      不行
+
+
+unset DISPLAY
+export QT_QPA_PLATFORM=linuxfb:fb=/dev/fb0
+export QT_QPA_GENERIC_PLUGINS="evdevkeyboard:/dev/input/event0,evdevmouse:/dev/input/event3"
+unset QT_QPA_ENABLE_TERMINAL_KEYBOARD
+
+
+export QT_QPA_GENERIC_PLUGINS="evdevkeyboard:/dev/input/event0,evdevmouse:/dev/input/event3"
+
+
+export QT_QPA_EVDEV_KEYBOARD_PARAMETERS=/dev/input/event0
+export QT_QPA_EVDEV_MOUSE_PARAMETERS=/dev/input/event3
+
+
+export QT_QPA_ENABLE_TERMINAL_KEYBOARD=1
+
+
+export QT_LOGGING_RULES="qt.qpa.input.debug=true"
+```
+
+键盘始终不能使用
+
+```
+root@petalinux:~# cat /sys/class/graphics/fb0/name
+xlnxdrmfb
+root@petalinux:~# cat /sys/class/graphics/fb0/virtual_size
+3840,4320
+root@petalinux:~# cat /sys/kernel/debug/dri/0/state
+plane[34]: plane-0
+	crtc=(null)
+	fb=0
+	crtc-pos=0x0+0+0
+	src-pos=0.000000x0.000000+0.000000+0.000000
+	rotation=1
+	normalized-zpos=0
+	color-encoding=ITU-R BT.601 YCbCr
+	color-range=YCbCr limited range
+plane[35]: plane-1
+	crtc=(null)
+	fb=0
+	crtc-pos=0x0+0+0
+	src-pos=0.000000x0.000000+0.000000+0.000000
+	rotation=1
+	normalized-zpos=0
+	color-encoding=ITU-R BT.601 YCbCr
+	color-range=YCbCr limited range
+plane[36]: plane-2
+	crtc=(null)
+	fb=0
+	crtc-pos=0x0+0+0
+	src-pos=0.000000x0.000000+0.000000+0.000000
+	rotation=1
+	normalized-zpos=0
+	color-encoding=ITU-R BT.601 YCbCr
+	color-range=YCbCr limited range
+plane[37]: plane-3
+	crtc=crtc-0
+	fb=52
+		allocated by = [fbcon]
+		refcount=2
+		format=AR24 little-endian (0x34325241)
+		modifier=0x0
+		size=3840x4320
+		layers:
+			size[0]=3840x4320
+			pitch[0]=15360
+			offset[0]=0
+			obj[0]:
+				name=0
+				refcount=1
+				start=00100000
+				size=66355200
+				imported=no
+				paddr=0x0000000035200000
+				vaddr=0000000005ab1788
+	crtc-pos=3840x2160+0+0
+	src-pos=3840.000000x2160.000000+0.000000+0.000000
+	rotation=1
+	normalized-zpos=0
+	color-encoding=ITU-R BT.601 YCbCr
+	color-range=YCbCr limited range
+plane[38]: plane-4
+	crtc=(null)
+	fb=0
+	crtc-pos=0x0+0+0
+	src-pos=0.000000x0.000000+0.000000+0.000000
+	rotation=1
+	normalized-zpos=0
+	color-encoding=ITU-R BT.601 YCbCr
+	color-range=YCbCr limited range
+crtc[39]: crtc-0
+	enable=1
+	active=1
+	self_refresh_active=0
+	planes_changed=1
+	mode_changed=0
+	active_changed=0
+	connectors_changed=0
+	color_mgmt_changed=0
+	plane_mask=8
+	connector_mask=1
+	encoder_mask=1
+	mode: "3840x2160": 60 594000 3840 4016 4104 4400 2160 2164 2174 2250 0x48 0x5
+connector[41]: HDMI-A-1
+	crtc=crtc-0
+	self_refresh_aware=0
+
+```
+
+
+
+```
+但是这里：
+
+this->raise();
+this->activateWindow();
+this->setFocus();
+
+在 X11 有意义。
+
+在 linuxfb/eglfs：
+
+通常：
+
+没有window manager
+没有active window概念
+
+所以：
+
+activateWindow()
+
+可能不起作用。
+
+你的 menu 如果启动后：
+
+STATE_EXITED
+
+那么依赖：
+
+Enter
+
+唤醒。
+
+如果 focus 不在 TopLeft：
+
+事件就不会到这里。
+
+建议增加：
+
+构造函数：
+
+setFocusPolicy(Qt::StrongFocus);
+setAttribute(Qt::WA_InputMethodEnabled,false);
+
+show之后：
+
+setFocus(Qt::OtherFocusReason);
+
+例如：
+
+void TopLeft::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    setFocus(Qt::OtherFocusReason);
+}
+```
+
+
+
+
+
+# USB接口问题
+
+如果接没有外部电源的usb-hub, 再接sata硬盘, 那么hub上的设备没有识别, 且板子其他usb口的u盘也不识别.
+
+组合情况比较复杂, 板子上hub的两个使能AIC1519N-0(1,4)应该都低能对外供电AIC1519N-0(8,5), 有的hub即使供电也有比如键盘不识别等现象.
+
+有些读卡器hub不行,另外的读卡器陪同一hub又可以. 可以说, 接sata硬盘, 似乎和不识别USB设备无关.
+
+板载了一个hub一分二, 再外接hub有风险.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
