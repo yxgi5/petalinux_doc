@@ -16389,6 +16389,67 @@ void TopLeft::showEvent(QShowEvent *event)
 
 
 
+```
+modetest -D a0060000.v_mix -s 41@39:3840x2160-30@AR24
+
+
+
+这两个可以同时输出
+modetest -D a0060000.v_mix -s 41@39:3840x2160-60 -P 36@39:1920x1080@UYVY
+modetest -D a0060000.v_mix -P 37@39:3840x2160@AR24
+
+# 强制使用 eglfs 的 KMS 后端
+export QT_QPA_PLATFORM=eglfs
+# 启用原子提交（推荐）
+export QT_EGLFS_KMS_ATOMIC=1
+# 最关键的一步：强制 Qt 只使用 Plane 37（你的 UI 层），禁止触碰其他 Plane
+export QT_EGLFS_KMS_PLANE_ID=37
+
+# 运行测试程序
+./10hz_refresh_qt_test  黑屏....
+
+
+xrandr --fb 3840x2160 --output HDMI-1 --mode 3840x2160 --rate 30
+
+```
+
+
+
+官方驱动看起来实现不了下面的拓扑
+
+```
+HDMI timing                     3840x2160@60
+                         │
+                         ▼
+                    V_MIX / fbdev
+                         │
+             ┌───────────┴───────────┐
+             │                       │
+        Video layer               UI layer
+        3840x2160@60              3840x2160
+                                     ▲
+                                     │
+                                  Qt 更新
+                                     │
+                                   10Hz
+
+
+
+                    V_MIX
+                      │
+          ┌───────────┴───────────┐
+          │                       │
+       Video                 UI buffer
+       60 fps                  10 fps
+          │                       │
+          └───────────┬───────────┘
+                      │
+                    HDMI
+                    
+```
+
+
+
 
 
 # USB接口问题
@@ -16401,23 +16462,600 @@ void TopLeft::showEvent(QShowEvent *event)
 
 板载了一个hub一分二, 再外接hub有风险.
 
+```
+
+root@petalinux:~# cat /sys/block/sda/removable
+0
+root@petalinux:~# cat /sys/block/sdb/removable
+1
+root@petalinux:~# readlink /sys/block/sda
+../devices/platform/axi/fd0c0000.ahci/ata2/host1/target1:0:0/1:0:0:0/block/sda
+root@petalinux:~# readlink /sys/block/sdb
+../devices/platform/axi/ff9d0000.usb0/fe200000.usb/xhci-hcd.1.auto/usb2/2-1/2-1.1/2-1.1:1.0/host2/target2:0:0/2:0:0:0/block/sdb
+
+root@petalinux:~# cat /sys/block/sda/device/vendor
+ATA     
+root@petalinux:~# cat /sys/block/sda/device/model
+Seagate ZA256CV1
+root@petalinux:~# cat /sys/block/sdb/device/vendor
+Generic 
+root@petalinux:~# cat /sys/block/sdb/device/model
+STORAGE DEVICE  
+
+
+
+root@petalinux:~# ls /sys/block/
+loop0         loop6         ram1          ram15         ram7
+loop1         loop7         ram10         ram2          ram8
+loop2         mmcblk0       ram11         ram3          ram9
+loop3         mmcblk0boot0  ram12         ram4          sda
+loop4         mmcblk0boot1  ram13         ram5          sdb
+loop5         ram0          ram14         ram6
+root@petalinux:~# cat /proc/mounts
+none / rootfs rw 0 0
+proc /proc proc rw,relatime 0 0
+sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0
+devtmpfs /dev devtmpfs rw,nosuid,size=4096k,nr_inodes=65536,mode=755 0 0
+securityfs /sys/kernel/security securityfs rw,nosuid,nodev,noexec,relatime 0 0
+tmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0
+devpts /dev/pts devpts rw,relatime,gid=5,mode=620,ptmxmode=666 0 0
+tmpfs /run tmpfs rw,nosuid,nodev,size=805356k,nr_inodes=819200,mode=755 0 0
+tmpfs /sys/fs/cgroup tmpfs ro,nosuid,nodev,noexec,size=4096k,nr_inodes=1024,mode=755 0 0
+cgroup2 /sys/fs/cgroup/unified cgroup2 rw,nosuid,nodev,noexec,relatime,nsdelegate 0 0
+cgroup /sys/fs/cgroup/systemd cgroup rw,nosuid,nodev,noexec,relatime,xattr,name=systemd 0 0
+cgroup /sys/fs/cgroup/debug cgroup rw,nosuid,nodev,noexec,relatime,debug 0 0
+cgroup /sys/fs/cgroup/memory cgroup rw,nosuid,nodev,noexec,relatime,memory 0 0
+cgroup /sys/fs/cgroup/cpu,cpuacct cgroup rw,nosuid,nodev,noexec,relatime,cpu,cpuacct 0 0
+cgroup /sys/fs/cgroup/net_cls,net_prio cgroup rw,nosuid,nodev,noexec,relatime,net_cls,net_prio 0 0
+cgroup /sys/fs/cgroup/freezer cgroup rw,nosuid,nodev,noexec,relatime,freezer 0 0
+cgroup /sys/fs/cgroup/blkio cgroup rw,nosuid,nodev,noexec,relatime,blkio 0 0
+cgroup /sys/fs/cgroup/devices cgroup rw,nosuid,nodev,noexec,relatime,devices 0 0
+cgroup /sys/fs/cgroup/cpuset cgroup rw,nosuid,nodev,noexec,relatime,cpuset 0 0
+cgroup /sys/fs/cgroup/pids cgroup rw,nosuid,nodev,noexec,relatime,pids 0 0
+cgroup /sys/fs/cgroup/perf_event cgroup rw,nosuid,nodev,noexec,relatime,perf_event 0 0
+hugetlbfs /dev/hugepages hugetlbfs rw,relatime,pagesize=2M 0 0
+mqueue /dev/mqueue mqueue rw,nosuid,nodev,noexec,relatime 0 0
+debugfs /sys/kernel/debug debugfs rw,nosuid,nodev,noexec,relatime 0 0
+tmpfs /tmp tmpfs rw,nosuid,nodev,nr_inodes=409600 0 0
+configfs /sys/kernel/config configfs rw,nosuid,nodev,noexec,relatime 0 0
+none /run/credentials/systemd-sysusers.service ramfs ro,nosuid,nodev,noexec,relatime,mode=700 0 0
+tmpfs /var/volatile tmpfs rw,relatime 0 0
+/dev/mmcblk0p1 /media/card vfat rw,relatime,fmask=0022,dmask=0022,codepage=437,iocharset=iso8859-1,shortname=mixed,errors=remount-ro 0 0
+/dev/sda1 /run/media/sda1 vfat rw,relatime,gid=6,fmask=0007,dmask=0007,allow_utime=0020,codepage=437,iocharset=iso8859-1,shortname=mixed,errors=remount-ro 0 0
+/dev/sdb1 /run/media/sdb1 vfat rw,relatime,gid=6,fmask=0007,dmask=0007,allow_utime=0020,codepage=437,iocharset=iso8859-1,shortname=mixed,errors=remount-ro 0 0
+/dev/mmcblk0p2 /run/media/mmcblk0p2 ext4 rw,relatime 0 0
+tmpfs /run/user/0 tmpfs rw,nosuid,nodev,relatime,size=402676k,nr_inodes=100669,mode=700 0 0
+
+
+
+root@petalinux:~# fdisk -l /dev/sda  
+Disk /dev/sda: 238.47 GiB, 256060514304 bytes, 500118192 sectors
+Disk model: Seagate ZA256CV1
+Units: sectors of 1 * 512 = 512 bytes
+Sector size (logical/physical): 512 bytes / 512 bytes
+I/O size (minimum/optimal): 512 bytes / 512 bytes
+Disklabel type: dos
+Disk identifier: 0x11b6ebee
+
+Device     Boot Start       End   Sectors   Size Id Type
+/dev/sda1        2048 500115455 500113408 238.5G  b W95 FAT32
+root@petalinux:~# file -sL /dev/sda1
+
+
+root@petalinux:~# fdisk -l /dev/sda  
+Disk /dev/sda: 238.47 GiB, 256060514304 bytes, 500118192 sectors
+Disk model: Seagate ZA256CV1
+Units: sectors of 1 * 512 = 512 bytes
+Sector size (logical/physical): 512 bytes / 512 bytes
+I/O size (minimum/optimal): 512 bytes / 512 bytes
+Disklabel type: dos
+Disk identifier: 0x11b6ebee
+
+Device     Boot Start       End   Sectors   Size Id Type
+/dev/sda1        2048 500115455 500113408 238.5G  b W95 FAT32
+
+
+file -sL /dev/sda1
+blkid /dev/sda1
+```
 
 
 
 
 
+# 自定义用户透明抽象设备驱动
+
+```
+                 User Application
+                       |
+              Application Control Plane
+                       |
+       +---------------+---------------+
+       |               |               |
+       |               |               |
+
+ Capture          Video Processing    Display
+ Subsystem        Subsystem           Subsystem
+```
+
+细化这个设想
+
+```
+1. Capture Subsystem
+   Sensor
+    |
+   CSI
+    |
+   ISP1 
+
+    |
+
+   DMA
+
+
+2. Video Processing Subsystem, optional
+
+   DMA
+
+    |
+
+   crop, scale, rotate, etc  (mix here?)
+
+    |
+
+   DMA(optional, or directily send to display sub.)
+
+
+3. Display Subsystem
+
+   DMA(optional, or from stream)
+
+   |
+
+   (mix here?)
+
+   |
+
+   interface(such as HDMI), sould be fix output, no fit by edid
+```
+
+一个关键是dma, 
+
+如果使用`vdma`等官方IP, buffer管理到底由谁负责？
+
+```
+reserved-memory静态？
+CMA动态？
+驱动申请？
+```
+
+CMA是通过cmdline给内核启动时候的参数, 这样给系统分配一块连续内存区
+
+既然是自定义的驱动和控制
+
+那么reserved-memory是和CMA不同的概念吗? 是针对每个驱动具体分配吗? 属于cma的区域吗
+
+> reserved-memory 可以包含 CMA，也可以完全独立于 CMA。
+
+
+
+Linux 下 DMA 内存的几种模式, 对于 FPGA 视频系统，大致有三类：
+
+```
+                  Linux DDR
+                     |
+       +-------------+-------------+
+       |                           |
+ 普通内核内存                  reserved-memory
+       |                           |
+       |                     +-----+------+
+       |                     |            |
+       |                  carveout      CMA
+       |
+       |
+   kmalloc/page allocator
+```
 
 
 
 
 
+## A. CMA (Contiguous Memory Allocator)
+
+典型：
+
+kernel cmdline：
+
+```
+cma=512M
+```
+
+或者：
+
+device tree:
+
+```
+linux,cma {
+    compatible = "shared-dma-pool";
+    reusable;
+    size = <0x20000000>;
+};
+```
+
+它的特点：
+
+### 启动时：
+
+预留：
+
+```
+DDR
++----------------+
+| Linux memory   |
+|                |
+| CMA 512MB      |
++----------------+
+```
+
+但是：
+
+Linux 可以暂时使用 CMA 区域。
+
+需要 DMA buffer 时：
+
+```
+driver
+ |
+dma_alloc_contiguous()
+ |
+CMA allocator
+ |
+返回物理连续内存
+```
+
+特点：
+
+优点：
+
+- 灵活
+- 多设备共享
+- 适合 V4L2 / DRM
+- 内存利用率高
+
+缺点：
+
+- 谁拿走多少不可预测
+- buffer 生命周期由驱动决定
+- 不能简单对应裸机地址
 
 
 
+## B. reserved-memory carveout
+
+例如：
+
+```
+reserved-memory {
+
+    video_reserved: buffer@80000000 {
+        reg = <0x0 0x80000000 0x0 0x10000000>;
+        no-map;
+    };
+};
+```
+
+意思：
+
+告诉 Linux：
+
+```
+0x80000000
++
+256MB
+
+这块不要碰
+```
+
+Linux：
+
+```
+不可分配
+不可swap
+不可page cache
+```
+
+这是最接近裸机的方法。
+
+你的 FPGA IP：
+
+```
+VDMA
+ |
+0x80000000
+```
+
+直接使用。
+
+------
+
+# 2. reserved-memory 和驱动的关系
+
+你的问题：
+
+> 是针对每个驱动具体分配吗？
+
+答案：
+
+**可以。**
+
+device tree 可以绑定：
+
+例如：
+
+```
+video_dma@a0000000 {
+
+    memory-region = <&capture_buf>;
+
+};
+```
+
+然后：
+
+```
+reserved-memory {
+
+    capture_buf:
+    buffer@90000000 {
+        reg =
+        <0x0 0x90000000
+         0x0 0x08000000>;
+    };
+
+};
+```
+
+于是：
+
+```
+capture driver
+
+只看到：
+
+0x90000000~0x98000000
+```
+
+别人不能用。
+
+------
+
+这非常适合你的设计：
+
+```
+Capture Driver
+
+reserved-memory:
+
+capture_pool
+      |
+      |
+      DMA
+```
+
+------
+
+# 3. CMA 和 reserved-memory 的关系
+
+这里容易混淆。
+
+## 情况1：
+
+普通 reserved-memory
+
+```
+buffer@90000000 {
+    reg=...
+};
+```
+
+这是：
+
+```
+固定地址
+固定大小
+```
+
+不是 CMA。
+
+------
+
+## 情况2：
+
+reserved CMA pool
+
+例如：
+
+```
+reserved-memory {
+
+    video_cma {
+        compatible = "shared-dma-pool";
+        reusable;
+        size=<0x20000000>;
+    };
+};
+```
+
+这是：
+
+```
+reserved-memory
+        |
+        |
+       CMA
+```
+
+也就是说：
+
+CMA 是 reserved-memory 的一种特殊用途。
 
 
 
+抽象设备调整为
 
+```
+Application Control Plane
+        |
+        |
++------------------------+
+| Device Manager         |
+|                        |
+| sensor mode            |
+| pipeline config        |
+| display mode           |
++------------------------+
+
+        |
+        |
+--------------------------------
+
+Capture Subsystem
+
+sensor
+ |
+CSI
+ |
+ISP
+ |
+DMA
+ |
+capture buffer
+
+
+--------------------------------
+
+Processing Subsystem
+
+input buffer
+
+ |
+crop
+scale
+rotate
+AI(optional)
+
+ |
+output buffer or stream
+
+
+--------------------------------
+
+Display Subsystem
+
+video buffer or strem
+ui buffer
+
+ |
+V_MIX
+
+ |
+One of HDMI/SDI/DVI/DP
+```
+
+
+
+如果是多接口同源输出(一般是都要有相同的界面叠加)
+
+```
+--------------------------------
+
+Processing Subsystem
+
+input buffer
+
+ |
+crop
+scale
+rotate
+others(optional)
+ |
+output buffer or stream
+
+--------------------------------
+
+Display Subsystem
+
+video buffer or strem
+ui buffer
+ |
+compositor(V_MIX) -- maybe direct connect stream to output such as HDMI, and duplicate stream to ddr
+ |
+Frame buffer
+ |
+Frame buffer
+ |
+Distribution
+ |
+Outputs(HDMI/SDI/DVI/DP)
+```
+
+
+
+AI 整理的下面这样, 我觉得还是上面的好
+
+```
+                    Capture Subsystem
+
+Sensor
+ |
+CSI
+ |
+ISP1
+ |
+Capture Buffer
+
+
+                    Processing Subsystem
+
+Input Buffer
+
+ |
+ +----------------+
+ | crop           |
+ | scale          |
+ | rotate         |
+ | others(optional) |
+ +----------------+
+
+ |
+Output Buffer / Stream
+
+
+                    Composition Subsystem
+
+Video Layer (Buffer / Stream)
+                   \
+                    \
+UI Layer (Buffer) ---> V_MIX / Compositor
+                    /
+                   /
+
+                 |
+                 |
+Composed Video Stream
+
+
+                    Distribution Subsystem
+
+(optional framebuffer)
+
+ |
+ +---------+---------+---------+
+ |         |         |         |
+
+HDMI      SDI       DVI       DP
+
+```
 
 
 
