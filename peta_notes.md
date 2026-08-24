@@ -566,7 +566,7 @@ i2c-0   i2c             i2c-gpio-0                              I2C adapter
 i2c-1   i2c             i2c-gpio-1                              I2C adapter
 i2c-2   i2c             i2c-gpio-2                              I2C adapter
 
-oot@petalinux:~# ls -l /sys/class/i2c-adapter/                                                                                 
+root@petalinux:~# ls -l /sys/class/i2c-adapter/                                                                                 
 lrwxrwxrwx    1 root     root             0 May  8 09:13 i2c-0 -> ../../devices/platform/i2c-gpio-0/i2c-0
 lrwxrwxrwx    1 root     root             0 May  8 09:13 i2c-1 -> ../../devices/platform/i2c-gpio-1/i2c-1
 lrwxrwxrwx    1 root     root             0 May  8 09:13 i2c-2 -> ../../devices/platform/i2c-gpio-2/i2c-2
