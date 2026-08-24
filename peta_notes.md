@@ -17189,12 +17189,10 @@ Frame Buffer Read (frmbuf_rd) / AXI VDMA (mm2s)
   ▼
 视频处理IP链（FPGA内）
   │  可能的IP:
-  │  ├─ scaler (v_scaler)       缩放
   │  ├─ crop (v_crop)           裁剪
+  │  ├─ scaler (v_scaler)       缩放
   │  ├─ rotate                  旋转
   │  ├─ osd / logo              OSD叠加
-  │  ├─ color space conversion  色彩空间转换
-  │  ├─ TPG (v_tpg)             测试图生成（调试用）
   │  └─ ... 其他自定义IP
   │
   │  每个IP都有:
