@@ -17641,11 +17641,11 @@ save_raw(buf, width, height, "frame.raw");
 
 
 
-又比如叠加和显示系统
+## 又比如叠加和显示系统(以kernel-module-hdmi为例子)
 
 可以先去掉叠加, 只输出一个hdmi
 
-那么需要改造 DRM依赖(下面是ai分析需要改造的)
+那么需要剥离`DRM`依赖(下面是ai分析需要改造的)
 
 ### 代码分层结构
 
