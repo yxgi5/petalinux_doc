@@ -396,6 +396,12 @@ sudo umount /mnt/rootfs
 petalinux-package --boot --fsbl --fpga --u-boot --force
 ```
 
+### 文件系统实际装了哪些包
+
+```
+ images/linux/rootfs.manifest
+```
+
 
 
 
@@ -530,7 +536,7 @@ find . -type f -name "system-top.dtb"
 
 # 问题处理2: 没有检测到i2c设备
 ```bash
-root@petalinux:~# i2cdetect -y 0  
+root@petalinux:~# ct -y 0  
      0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f
 00:                         -- -- -- -- -- -- -- -- 
 10: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
@@ -16031,6 +16037,10 @@ foo: vcap_mipi_csi2_rx_v_proc_ss_scaler {
 
 # vcu测试
 
+
+
+https://blog.csdn.net/qq_43467135/article/details/125395637
+
 ```
 echo "" | modetest -D a0060000.v_mix -s 39@37:3840x2160-60@AR24
 
@@ -17085,9 +17095,13 @@ unset LD_LIBRARY_PATH
 5.对我提出的需要, 你不要立即就开展代码修改, 应该给我建议并拆解, 每一步集中解决有限的少数修改点上
 
 6.我确认后你才提交修改, 如果我忘了让你提交, 你要在新的需求分析实施之前询问我是否先提交当前的修改.
+
+7.每处理一个问题, 最好是新建分支, 处理好之后合并到主分支或指定分支. 合并分支是采用`merge.ff=false`  merge commit（--no-ff）
+
+8.每次需求输入和你进行了什么修改要文档落盘. 讨论型问题也要文档落盘
 ````
 
-
+`/home/andy/.codebuddy/memery/`
 
 
 
@@ -17922,6 +17936,277 @@ vphy@a0030000 {
 | **方案加密性**   | 黑盒                       | 易暴露实现方法             |
 | **长期可维护性** | 差（耦合重）               | 好（分层清晰）             |
 | **适合场景**     | 单功能、快速交付、硬件稳定 | 多功能、长期演进、团队协作 |
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# TODO
+
+```
+./pl-video-init -m 2160p60 -f yuv422 -b 10 -p 2 -r 594000000
+
+./pl-video-init -m 2160p30 -f yuv422 -b 10 -p 2 -r 297000000
+
+QT_QPA_PLATFORM=offscreen ./qt_fb_test
+
+i2ctransfer -y -a -f 0 w3@0x1a 0x30 0x70 0x40
+
+
+QT_QPA_PLATFORM=linuxfb QT_QPA_EVDEV_KEYBOARD_PARAMETERS=/dev/input/event0 ./osd_menu
+OSD_EVDEV_DEVICE=/dev/input/event0 QT_QPA_PLATFORM=linuxfb ./osd_menu
+
+OSD_EVDEV_DEVICE=/dev/input/event0 QT_QPA_PLATFORM=offscreen ./osd_menu
+```
+
+```
+setenv bootargs ' earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/mmcblk0p2 rw rootwait cma=1000M uio_pdrv_genirq.of_id=xlnx,generic-uio'
+saveenv
+boot
+
+setenv bootargs ' earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/mmcblk0p2 rw rootwait cma=512M uio_pdrv_genirq.of_id=xlnx,generic-uio'
+
+
+setenv bootargs ' earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/ram0 rw cma=1000M earlyprintk uio_pdrv_genirq.of_id=xlnx,generic-uio cpuidle.off=1 cpufreq.off=1 init_fatal_sh=1'
+```
+
+
+
+```
+for i in $(seq 8 119); do
+  a=$(printf '0x%02x' $i)
+  if i2ctransfer -y 4 r1@"$a" >/dev/null 2>&1; then
+    echo "ACK at: $a"
+  fi
+done
+
+ACK at: 0x1b
+记到设备树(没有现成的内核驱动,主要靠用户空间访问,这一步不是必须的,但可以把地址"钉"在系统里防止将来被别人误占)
+&i2c1 {   /* alias 成 i2c4 的那个节点 */
+    ds28c36@1b {
+        compatible = "maxim,ds28c36";
+        reg = <0x1b>;
+    };
+};
+
+root@petalinux:~# i2cdetect -y -a -r 4
+     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f
+00: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+10: -- -- -- -- -- -- -- -- -- -- -- 1b -- -- -- -- 
+20: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+30: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+40: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+50: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+60: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+70: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+
+为何 -r 才扫到 0x1b：
+
+i2cdetect 默认（不加 -r）用 SMBus Quick Write（0 字节写、只测地址 ACK）探测；
+你这条总线输出 Can't use SMBus Quick Write command，说明该 i2c 控制器不支持（或该总线上不允许）SMBus Quick 功能，i2cdetect 于是跳过部分地址的探测——这就是默认输出里大片区域空白、0x1b 根本不显示的原因；
+加密/安全芯片通常只实现标准 I2C 读/写时序，很多本就不响应 SMBus Quick Command（个别还有意对"空探测"不应答以防被枚举，只响应带命令序列的读）；
+-r 改用 SMBus Receive Byte（发地址+读位、真正读 1 字节）去探测，芯片对读方向 ACK，于是 0x1b 现身。所以"1b 只在 -r 下可见"是正常的，不代表芯片异常，也不代表它需要被占位。
+```
+
+
+
+```
+for a in 0x0b 0x36 0x1a 0x10 0x11 0x50; do
+  echo "dummy $a" > /sys/bus/i2c/devices/i2c-0/new_device
+done
+i2cdetect -y -a 0    # 0b地址显示 UU
+
+time i2ctransfer -f -y 0 r1@0x1a   # IMX678
+time i2ctransfer -f -y 0 r1@0x11   # ADS7128
+time i2ctransfer -f -y 0 r1@0x50   # AT24C02
+time i2ctransfer -f -y 0 r1@0x10   # 电机(能通?)
+```
+
+```
+pidof osd_menu
+timeout 60 xxx
+```
+
+
+
+
+
+```
+
+
+ssh root@192.168.1.100
+# 板子 ssh 默认 PATH 不含 /sbin，fdisk/mkfs.vfat/blkid 会“找不到”，必须先补
+export PATH=/sbin:/usr/sbin:/bin:/usr/bin:$PATH
+
+
+# 侦察
+lsblk
+blkid /dev/sda                                                # 返回码 2 = 无文件系统签名
+dd if=/dev/sda bs=512 count=1 2>/dev/null | od -A d -t x1 | head   # 全 0 = 无分区表
+cat /sys/block/sda/removable                                  # 0 = 非可移动(判定为 SATA)
+readlink /sys/block/sda                                       # 路径应含 ahci
+
+# 建分区表 + 单分区
+printf 'o\nn\np\n1\n\n\n\nw\n' | fdisk /dev/sda
+ls -l /dev/sda1        # 确认分区节点已生成
+o=新建 DOS 空表，n p 1=主分区 1，两个空行=起始/结束都取默认（即整盘）。
+
+# 修正分区类型码为 0x0c（W95 FAT32 LBA）
+dd if=/dev/sda bs=1 skip=446 count=16 2>/dev/null | od -A d -t x1   # 第 5 字节=类型码
+printf '\014' | dd of=/dev/sda bs=1 seek=450 count=1                # 450 = 446+4
+sync
+dd if=/dev/sda bs=1 skip=446 count=16 2>/dev/null | od -A d -t x1   # 应看到 0c
+
+这块板子的 fdisk，t → 输入 c 得到的是 FAT12，输入 0c 会被拆成两条命令（0: unknown command），所以直接改 MBR 字节最稳。
+busybox dd 不支持 conv=notrunc；写块设备本身不会被截断，不需要该参数。
+
+# 格式化为 FAT32
+mkfs.vfat -F 32 -n HDD /dev/sda1
+blkid /dev/sda1        # 期望 LABEL="HDD" TYPE="vfat"
+
+
+# 挂载
+
+# 方式 A：触发 udev 规则自动挂载（等效开机时的行为）
+udevadm settle
+udevadm trigger --action=add --sysname-match="sda1"
+
+# 方式 B：手动挂载（挂载点与 trd-automount.rules 一致）
+mkdir -p /media/sata && mount /dev/sda1 /media/sata
+
+
+# 验证
+
+mount | grep sda
+df -h /run/media/sda1
+
+
+```
+
+```
+ffmpeg -i input.mp4 -an -vcodec copy -bsf:v hevc_mp4toannexb output.hevc
+ffmpeg -i in.mp4 -an -vcodec copy -bsf:v h264_mp4toannexb output.h264
+
+ffprobe -v trace 看原子顺序是 ftyp → moov → mdat。
+```
+
+
+
+```
+petalinux/project-spec/meta-user/recipes-kernel/linux/linux-xlnx/bsp.cfg
+添加
+CONFIG_USB_SERIAL=y
+CONFIG_USB_SERIAL_GENERIC=y
+CONFIG_USB_SERIAL_FTDI_SIO=y
+
+
+本地查 grep USB_SERIAL build/tmp/work-shared/zynqmp-generic/kernel-build-artifacts/.config
+板子上 zcat /proc/config.gz | grep USB_SERIAL
+```
+
+
+
+
+
+ldd
+
+如果`busybox`没有添加`ldd`功能,可以这样查看库依赖
+
+```
+LD_TRACE_LOADED_OBJECTS=1 ./xxx
+```
+
+```
+/proc/interrupts
+```
+
+
+
+```
+PLVIDEO_NO_HDMI=1 ./osd_menu
+```
+
+
+
+```
+现在板子可访问, ssh地址`192.168.1.100`,密码`a`
+板子上有devmem, 如果你找不到, 就看看环境变量是否要设置
+```
+
+
+
+```
+【会话恢复摘要 — osd_menu 4K OSD 项目】
+
+工作目录：/home/andy/workdir/zirui/20_uio_petalinux/app/osd_menu
+（原验收目录 acceptance/osd_menu_4k 已迁出；两者同一远端
+ git@gitee.com:yxgi5/osd_menu_4k.git，已同步到 bdbff3c）
+板子：root@192.168.1.100（ssh 密码`a`）；可执行文件在 ~；
+      devmem 需 export PATH=$PATH:/sbin:/usr/sbin
+
+项目：ZynqMP 4K OSD 菜单程序（Qt5），HDMI + SDI 12G 双输出，
+      UI 走物理 framebuffer（0x68000000 起，3×32MB，OSD_FB_COUNT=2/3）
+
+当前里程碑 tag：sdi-output-v1.0-20260921
+      （应用侧 bdbff3c / sys 侧 34e4337，两仓同名）
+
+最近完成：
+- SDI 12G 4K60 输出驱动 libplvideo/sdi_drv.{c,h}
+- 退出关停关 GT：修复退出后 SDI 残留最后一帧 + 重启横向重影
+- PLVIDEO_NO_HDMI / PLVIDEO_NO_SDI 输出口调试开关（取值须严格为 1）
+- 修复 UI framebuffer 因 DC ZVA 触发 SIGBUS 导致菜单不显示
+- README.md 合并 readme.md（附录 A 中文字体 / B 串口屏命令帧）
+
+约定：
+- 分支 fix/... feat/... docs/...，验证后普通 merge（非 squash）回 master
+- 提交信息 conventional 前缀 + 中文描述
+- 文档 docs/sdi-output-porting.md「退出关停」一节、docs/TODO.md
+  （完成项注明提交号）
+
+遗留：
+- plvideo_teardown 顺序「先断上游后停输出」理论上有欠载窗口，
+  实测无残影错色，暂未改；复现时把 hdmi_close/sdi_close 提到最前
+- 后续开发在 app/osd_menu 上新建分支
+
+```
+
+
 
 
 
