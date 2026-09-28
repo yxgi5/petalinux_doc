@@ -17099,6 +17099,10 @@ unset LD_LIBRARY_PATH
 7.每处理一个问题, 最好是新建分支, 处理好之后合并到主分支或指定分支. 合并分支是采用`merge.ff=false`  merge commit（--no-ff）
 
 8.每次需求输入和你进行了什么修改要文档落盘. 讨论型问题也要文档落盘
+
+9.给我问你问题和你的回答进行编号, 方便我引用上下文
+
+10. rules, context本地化
 ````
 
 `/home/andy/.codebuddy/memery/`
@@ -18167,7 +18171,39 @@ PLVIDEO_NO_HDMI=1 ./osd_menu
 ```
 现在板子可访问, ssh地址`192.168.1.100`,密码`a`
 板子上有devmem, 如果你找不到, 就看看环境变量是否要设置
+
+
+systemctl stop trd-autostart.service
+killall osd_menu
+systemctl start trd-autostart.service
+
+nohup ./xxxx
+setsid 
+
+OSD_TRACE=af,ae,temp,focus,press setsid nohup ./osd_menu
+
+systemctl is-active trd-autostart.service    # 期望 active
+systemctl is-active getty@tty1.service       # 期望 inactive
+pidof osd_menu                               # 期望只有 1 个 pid
+journalctl -u trd-autostart.service --no-pager -f    # 日志现在走 journald，-f 跟尾
 ```
+
+
+
+```
+systemctl stop trd-autostart.service
+killall osd_menu
+systemctl start trd-autostart.service
+==
+
+systemctl stop getty@tty1.service      # ← 我的手动启动漏掉的就是这一步
+while [ ! -x "/run/media/mmcblk0p1/osd_menu" ] && [ $COUNT -lt 30 ]; do sleep 1; ... done
+cd /run/media/mmcblk0p1
+./osd_menu &
+
+```
+
+
 
 
 
