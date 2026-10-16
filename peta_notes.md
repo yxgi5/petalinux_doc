@@ -17103,6 +17103,58 @@ unset LD_LIBRARY_PATH
 9.给我问你问题和你的回答进行编号, 方便我引用上下文
 
 10. rules, context本地化
+
+vscode codebuddy插件怎么实现无人值守，就是不要一直让我点允许命令执行之类的
+/home/andy/.config/Code/User/settings.json
+```
+{
+    "workbench.colorTheme": "Default Dark Modern",
+    "tabnine.experimentalAutoImports": true,
+    "workbench.editorAssociations": {
+        "{git,gitlens}:/**/*.{md,csv,svg}": "default"
+    },
+    "vscode-office.openOutline": true,
+    "vscode-office.editorTheme": "One Dark",
+    "redhat.telemetry.enabled": true,
+    "C_Cpp.intelliSenseEngine": "disabled",
+    "makefile.configureOnOpen": false,
+    "workbench.editor.empty.hint": "hidden",
+    "codingcopilot.autoRun": true,
+    "codingcopilot.autoRunMode": "RunEverything",
+    "codingcopilot.autoModifyFile": true,
+    "codingcopilot.requestMaxStepLimit": 0,
+    "codingcopilot.terminal.commandTimeoutMs": 1800000,
+    "codingcopilot.customBlacklistCommands": [
+        "^git\\s+(push|fetch)\\s+.*(--force|-f)",
+        "^git\\s+reset\\s+--hard",
+        "^git\\s+clean\\s+-[a-z]*f",
+        "^rm\\s+(-r|-rf|-fr)\\s+/",
+        "^git\\s+filter-branch"
+    ],
+    "QoderCN.aI Chat.mcpToolsInAgentMode": false
+}
+```
+C:\Users\andy\AppData\Roaming\Code\User\settings.json
+```
+{
+    "debug.breakpointsView.presentation": "tree",
+
+    "codingcopilot.autoRun": true,
+    "codingcopilot.disabledSecurityCategories": [],
+    "codingcopilot.customBlacklistCommands": [
+        "rm\\s+-rf\\s+/",
+        "rm\\s+-rf\\s+~",
+        "git\\s+push\\s+.*--force",
+        "git\\s+reset\\s+--hard",
+        "Remove-Item\\s+.*-Recurse.*-Force"
+    ],
+    "codingcopilot.requestMaxStepLimit": 0,
+    "codingcopilot.customAgentMaxStep": 0,
+    "codingcopilot.terminal.commandTimeoutMs": 1800000,
+    "codingcopilot.autoAcceptWebSearch": true,
+    "codingcopilot.standaloneTerminal": true
+}
+```
 ````
 
 `/home/andy/.codebuddy/memery/`
@@ -18201,6 +18253,11 @@ while [ ! -x "/run/media/mmcblk0p1/osd_menu" ] && [ $COUNT -lt 30 ]; do sleep 1;
 cd /run/media/mmcblk0p1
 ./osd_menu &
 
+
+trd-autostart.service
+
+
+systemd 自启 vs 手工 nohup
 ```
 
 
@@ -18244,7 +18301,38 @@ cd /run/media/mmcblk0p1
 
 
 
+```
+OSD_SKIP_PASSWORD=1 ./osd_menu     # 跳过开机锁定
 
+kill $(ps -eo pid,args | awk '$2=="./osd_menu"{print $1}'); sleep 2; rm -f /var/lock/LCK..*; cd /run/media/mmcblk0p1 && (nohup ./osd_menu > /tmp/osd.log 2>&1 &)
+
+kill $(ps -eo pid,args | awk '$2=="./osd_menu"{print $1}'); sleep 2; rm -f /var/lock/LCK..*; cd /run/media/mmcblk0p1 && (OSD_SKIP_PASSWORD=1 nohup ./osd_menu > /tmp/osd.log 2>&1 &)
+
+SSHS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -x"; sshpass -p a ssh $SSHS root@192.168.1.100 'kill $(ps -eo pid,args | awk "\$2==\"./osd_menu\"{print \$1}"); sleep 2; rm -f /var/lock/LCK..*; cd /run/media/mmcblk0p1 && (OSD_SKIP_PASSWORD=1 nohup ./osd_menu > /tmp/osd_skip.log 2>&1 &); sleep 12; export PATH=$PATH:/sbin:/usr/sbin; cd /run/media/mmcblk0p1/osd_menu/tools/fb_dump && sh ./fb_snap.sh full /tmp/skip.png; ls -l /tmp/skip.png; tail -5 /tmp/osd_skip.log'
+
+
+服务里加一行 Environment="OSD_REQUIRE_PASSWORD=1"
+
+kill $(ps -eo pid,args | awk '$2=="./osd_menu"{print $1}'); sleep 2; rm -f /var/lock/LCK..*; cd /run/media/mmcblk0p1 && (OSD_REQUIRE_PASSWORD=1 nohup ./osd_menu > /tmp/osd.log 2>&1 &)
+
+kill $(ps -eo pid,args | awk '$2=="./osd_menu"{print $1}'); sleep 2; rm -f /var/lock/LCK..*; cd /run/media/mmcblk0p1 && (nohup ./osd_menu > /tmp/osd.log 2>&1 &)
+```
+
+
+
+```
+./eepdump set hand --type=3 --flags=0x03 --id=0x12345678 --confirm 2
+
+export SSHPASS=a && sshpass -p a ssh -o StrictHostKeyChecking=no root@192.168.1.100 'export PATH=$PATH:/sbin:/usr/sbin; nohup sh -c "end=\$(( \$(date +%s) + 60 )); while [ \$(date +%s) -lt \$end ]; do devmem 0xA0090000 32 0x00000002; sleep 0.02; done" > /tmp/freeze3.log 2>&1 & sleep 20; echo "=== 20s ==="; grep -a "stalled\|still stalled\|Cannot queue" /tmp/osd3.log | tail -5'
+```
+
+
+
+```
+头端光源 freq_khz 应该要5khz才行....
+
+devmem 0xa02000c4 32 0x07000023                                                                                               devmem 0xa02000c4 32 0x08000023                                                                                               devmem 0xa02000c4 32 0x09000023                                                                                                devmem 0xa02000c4 32 0x0a000023                                                                                               devmem 0xa02000c4 32 0x0b000023                                                                                               devmem 0xa02000c4 32 0x0c000023                                                                                               
+```
 
 
 
