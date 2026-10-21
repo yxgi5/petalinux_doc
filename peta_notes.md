@@ -18316,12 +18316,28 @@ SSHS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ER
 kill $(ps -eo pid,args | awk '$2=="./osd_menu"{print $1}'); sleep 2; rm -f /var/lock/LCK..*; cd /run/media/mmcblk0p1 && (OSD_REQUIRE_PASSWORD=1 nohup ./osd_menu > /tmp/osd.log 2>&1 &)
 
 kill $(ps -eo pid,args | awk '$2=="./osd_menu"{print $1}'); sleep 2; rm -f /var/lock/LCK..*; cd /run/media/mmcblk0p1 && (nohup ./osd_menu > /tmp/osd.log 2>&1 &)
+
+
+OSD_REMEMBER_STATUS_DISPLAY=1 使用右侧分别隐藏
+OSD_FORCE_ALARM=1 强制显示报警区
+OSD_AUTO_LIGHT_TARGET=1 测试自动亮度模式的亮度值下发
+OSD_FAKE_HANDLE_TEMP=1 验证有 NTC 分支的真实数值渲染
+OSD_KEY_SOCK=/tmp/osd_key.sock
+
+PLVIDEO_NO_SDI=1
+kill $(ps -eo pid,args | awk '$2=="./osd_menu"{print $1}'); sleep 2; rm -f /var/lock/LCK..*; cd /run/media/mmcblk0p1 && (PLVIDEO_NO_SDI=1 nohup ./osd_menu > /tmp/osd.log 2>&1 &)
+
+
+
+export SSHPASS=root && H="sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@192.168.1.100" && $H 'cd /run/media/mmcblk0p1; kill $(ps -eo pid,args | awk "\$2==\"./osd_menu\"{print \$1}") 2>/dev/null; sleep 3; ./eepdump set board --big-light=1 --pump=1 --confirm 2>&1 | grep -E "完成" | tail -1; ./eepdump set hand --type=0 --flags=0x07 --confirm 2>&1 | grep -E "完成" | tail -1; ./eepdump info board 2>&1 | grep capability | head -1; OSD_KEY_SOCK=/tmp/osd_key.sock OSD_LIGHT_SRC_LIMIT=1 nohup ./osd_menu > /tmp/osd.log 2>&1 & sleep 10; echo "进程=$(pgrep -f "^\./osd_menu" | wc -l)"; grep "允许的光源" /tmp/osd.log | tail -1; grep "status frame sent" /tmp/osd.log | tail -1' 2>&1 | grep -v xauth
 ```
 
 
 
 ```
 ./eepdump set hand --type=3 --flags=0x03 --id=0x12345678 --confirm 2
+
+./eepdump settime board --sec=0 --reset --confirm 归零
 
 export SSHPASS=a && sshpass -p a ssh -o StrictHostKeyChecking=no root@192.168.1.100 'export PATH=$PATH:/sbin:/usr/sbin; nohup sh -c "end=\$(( \$(date +%s) + 60 )); while [ \$(date +%s) -lt \$end ]; do devmem 0xA0090000 32 0x00000002; sleep 0.02; done" > /tmp/freeze3.log 2>&1 & sleep 20; echo "=== 20s ==="; grep -a "stalled\|still stalled\|Cannot queue" /tmp/osd3.log | tail -5'
 ```
@@ -18335,4 +18351,164 @@ devmem 0xa02000c4 32 0x07000023                                                 
 ```
 
 
+
+```
+project-spec/configs/rootfs_config
+
+CONFIG_ADD_EXTRA_USERS="root:root;petalinux::passwd-expire;"
+                            ↑ 这个就是 root 的密码
+                            
+
+
+CONFIG_imagefeature-debug-tweaks=y      ← 不能关！
+
+build/misc/rootfs_config/rootfs_config.py:104-106 的逻辑是：
+if param[0] == "root":
+    if not 'debug-tweaks' in image_features:
+        continue          # 没开 debug-tweaks → root 这一条直接跳过，密码根本不设
+```
+
+````
+SSH免密
+
+
+
+新建这个文件
+project-spec/meta-user/recipes-core/images/petalinux-image-minimal.bbappend
+
+（recipes-core 目录现在不存在，要新建。image 名确认过：build/conf/plnxtool.conf:182 是 IMAGE_INSTALL:pn-petalinux-image-minimal）
+```
+# 免密登录：把开发机公钥写进 root 的 authorized_keys。
+# rootfs 是 ramfs，板上手工拷的文件重启即丢，所以只能做进镜像。
+# 注意：Petalinux 里 root 的 home 是 /home/root，不是 /root。
+
+ROOTFS_POSTPROCESS_COMMAND += "install_ssh_pubkey; "
+
+install_ssh_pubkey() {
+    mkdir -p ${IMAGE_ROOTFS}/home/root/.ssh
+    {
+        echo 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC2i/Lu18LrmuAFTsiATM6DPbmqfhhZ2hreUSw0t9I6qGjAxyfUY0ecNW5ZOo2fUORFUSDBpqP6fkWyNxFfkq/hPVq0EYsNIIzrCKL1ZqPqfXqcbgkRpvU0R0+rWTT6gmdjwcPo8SQnJ6bQ9PQFDVh/H4f3HAG9AzJqkOy9OcTS3qbVTpK3TWlu96NKpfifpIzyQNi1rA4Q/0JSCPTKogRt8vateV4pV2lC110yvVHy8NsYaNPoFUYIIgyIlG44Gr7DuqtqrJOVxdHJxn0TtGjtBprQVaQEhRDNBYCJIdSP1MZZOxMFMokeQ2Lf/6hOV/Rpp1kEVdvaisQmO1S2uNKX denglitsch@gmail.com'
+        echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEKayVuv3jPO3rUK857+zkuQu3nOud+2iwwjK+RHPLvy zhaoguo@xinhaigroup.com'
+    } > ${IMAGE_ROOTFS}/home/root/.ssh/authorized_keys
+    chmod 700 ${IMAGE_ROOTFS}/home/root/.ssh
+    chmod 600 ${IMAGE_ROOTFS}/home/root/.ssh/authorized_keys
+    chown -R 0:0 ${IMAGE_ROOTFS}/home/root/.ssh
+}
+```
+上面两条是本机现成的 id_rsa.pub 和 id_ed25519.pub，一行一个公钥，想加就加行（你还有 mykey_rsa.pub，需要的话再加一行）。id_dsa.pub 我没放 —— ssh-dss 已被现代 ssh 默认禁用。
+权限 700/600 不能省：dropbear 会静默拒绝权限过松的 authorized_keys
+
+另一个坑：host key 每次重启都变
+/etc/dropbear/dropbear_rsa_host_key
+
+在本机 ~/.ssh/config 里固定：
+```
+Host board
+    HostName 192.168.1.100
+    User root
+    IdentityFile ~/.ssh/id_rsa
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+```
+````
+
+
+
+```
+先做无损备份：停程序 → 卸 p1 → 把整个分区镜像拉到开发机 → 立刻挂回并恢复运行。之后修复在镜像上离线做，不动板子：
+
+停程序并卸载 p1
+
+export SSHPASS=a echo "=== 1) 停程序并卸载 p1 ===" sshpass -p a ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@192.168.1.100 ' cd /run/media/mmcblk0p1 kill $(ps -eo pid,args | awk "\$2==\"./osd_menu\"{print \$1}") 2>/dev/null sleep 3 echo "残留=$(ps -eo pid,args | awk "\$2==\"./osd_menu\"" | wc -l)" cd / umount /run/media/mmcblk0p1 2>&1 && echo "umount OK" || echo "umount FAILED(仍被占用)" mount | grep mmcblk0p1 || echo "p1 已卸载" ' 2>&1 | grep -v xauth
+
+p1 已卸载（rootfs 在 ramfs，所以能卸）。现在拉镜像（用 gzip 压缩，FAT 镜像空白多、传得快）：
+
+拉取 p1 分区镜像
+
+export SSHPASS=a time sshpass -p a ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@192.168.1.100 "dd if=/dev/mmcblk0p1 bs=4M 2>/dev/null | gzip -1" > /tmp/p1.img.gz echo "---" ls -la /tmp/p1.img.gz gunzip -f /tmp/p1.img.gz ls -la /tmp/p1.img echo "期望大小 = 499MiB = $((499*1024*1024)) 字节"
+
+镜像到手（524288000 字节）。先把板子恢复运行（它现在没程序），同时在开发机只读检查镜像：
+
+挂载并恢复板子运行
+
+export SSHPASS=a; sshpass -p a ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@192.168.1.100 ' mkdir -p /run/media/mmcblk0p1 mount -t vfat /dev/mmcblk0p1 /run/media/mmcblk0p1 2>&1 && echo "mount OK" || echo "mount FAILED" mount | grep mmcblk0p1 | sed "s/.*type //" echo "文件数=$(ls /run/media/mmcblk0p1/ | wc -l)" rm -f /var/lock/LCK..* (cd /run/media/mmcblk0p1; OSD_KEY_SOCK=/tmp/osd_key.sock nohup ./osd_menu > /tmp/osd.log 2>&1 &) sleep 9 echo "=== 恢复后 ===" ps -eo pid,args | awk "\$2==\"./osd_menu\"" echo "串口失败=$(grep -ac "Open serial failed" /tmp/osd.log)" grep -a "HMI Screen Online" /tmp/osd.log | tail -1 ' 2>&1 | grep -v xauth
+
+只读检查镜像错误
+
+cd /tmp && echo "=== 只读检查（不修改镜像）===" && fsck.vfat -n /tmp/p1.img 2>&1 | head -40; echo "退出码=$?"
+
+
+
+在镜像副本上修复
+
+cd /tmp && echo "=== /tmp 空间 ===" && df -h /tmp | tail -1 cp /tmp/p1.img /tmp/p1_orig.img && echo "原始镜像已备份 -> /tmp/p1_orig.img" echo "" echo "=== 执行修复（-a 自动修）===" fsck.vfat -a /tmp/p1.img 2>&1 | head -30 echo "" echo "=== 修后再查（应干净）===" fsck.vfat -n /tmp/p1.img 2>&1 | head -20
+
+停程序并卸载 p1 准备写回
+
+export SSHPASS=a; sshpass -p a ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@192.168.1.100 ' kill $(ps -eo pid,args | awk "\$2==\"./osd_menu\"{print \$1}") 2>/dev/null sleep 3 echo "残留=$(ps -eo pid,args | awk "\$2==\"./osd_menu\"" | wc -l)" cd / rm -f /var/lock/LCK..* umount /run/media/mmcblk0p1 2>&1 && echo "umount OK" || echo "umount FAILED" mount | grep mmcblk0p1 || echo "p1 已卸载 ✓（可以安全写入）" ' 2>&1 | grep -v xauth
+
+p1 已卸载。执行整区写回（约 3~6 分钟）：
+
+写回修复后的镜像到 eMMC p1
+
+cd /tmp && ls -la p1.img && time (gzip -1 -c /tmp/p1.img | sshpass -p a ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@192.168.1.100 'gunzip -c | dd of=/dev/mmcblk0p1 bs=4M 2>&1')
+
+
+```
+
+
+
+```
+伪串口灌数据
+socat -d -d pty,raw,echo=0,link=/dev/ttyUSB0 pty,raw,echo=0
+```
+
+
+
+```
+# ① 先停程序，确保没有进程占着分区
+killall osd_menu
+
+# ② 卸载
+umount /run/media/mmcblk0p1
+
+# ③ 先只读检查，看损伤范围（不改动任何东西，安全第一）
+fsck.vfat -n /dev/mmcblk0p1
+
+# ④ 自动修复（-w 表示立即写回，否则改动只留在内存里等你确认）
+fsck.vfat -a -w /dev/mmcblk0p1
+
+# ⑤ 重新挂载
+mount -t vfat /dev/mmcblk0p1 /run/media/mmcblk0p1
+
+# 备份整个分区（趁现在还能读）
+cp -a /run/media/mmcblk0p1 /run/media/mmcblk0p2/p1_backup_$(date +%m%d)
+
+umount /run/media/mmcblk0p1
+mkfs.vfat -F 32 /dev/mmcblk0p1
+mount -t vfat /dev/mmcblk0p1 /run/media/mmcblk0p1
+
+# 从备份恢复程序
+cp /run/media/mmcblk0p2/osd_menu.bak_1014_1005 /run/media/mmcblk0p1/osd_menu
+chmod +x /run/media/mmcblk0p1/osd_menu
+
+```
+
+
+
+```
+候选密码
+for pw in a root; do out=$(sshpass -p "$pw" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=8 -o NumberOfPasswordPrompts=1 -x root@192.168.1.100 'echo AUTH_OK' 2>&1); if echo "$out" | grep -q AUTH_OK; then echo "密码=$pw OK"; break; fi; done; sshpass -p a ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -x root@192.168.1.100 'echo "=== /proc/mtd ==="; cat /proc/mtd 2>/dev/null; echo "(no mtd if empty)"; echo "=== /dev/mtd* ==="; ls /dev/mtd* 2>/dev/null || echo none; echo "=== dmesg spi/mtd ==="; dmesg | grep -iE "spi|mtd|jedec|n25q|s25fl" | head -15; echo "=== mtd 工具 ==="; ls /usr/sbin/flashcp /usr/sbin/flash_erase /usr/sbin/mtdinfo /sbin/flashcp 2>/dev/null; command -v flashcp flash_erase mtdinfo; echo "=== SD dtb md5 ==="; md5sum /run/media/sda1/system.dtb 2>/dev/null'
+
+
+ping -c 2 -W 2 192.168.1.100 2>&1 | tail -3; for pw in a root; do echo "--- 试密码: $pw ---"; sshpass -p $pw ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 root@192.168.1.100 'echo OK; ls -la /run/media/mmcblk0p1/ | head -12' 2>&1 | grep -v "xauth\|Warning\|^$" | head -16 && break; done
+
+for pw in a root; do echo "--- 试密码: $pw ---"; out=$(sshpass -p $pw ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 root@192.168.1.100 'echo LOGIN_OK; ls -la /run/media/mmcblk0p1/ | head -12' 2>&1); rc=$?; echo "$out" | grep -v "xauth\|Warning" | head -14; if [ $rc -eq 0 ]; then echo ">>> 密码可用: $pw"; break; fi; done
+```
+
+```
+标定主板
+
+export SSHPASS=root && H="sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@192.168.1.100" && $H 'cd /run/media/mmcblk0p1 && echo "=== 标定 capability ===" && ./eepdump set board --big-light=1 --pump=1 --confirm 2>&1 | tail -8 && echo "=== 清 100 秒残留 ===" && ./eepdump settime board --sec=0 --reset --confirm 2>&1 | tail -5 && echo "=== 复核 ===" && ./eepdump info board 2>&1 | grep -E "capability|累计|crcOk|有效性" | head -8' 2>&1 | grep -v xauth
+```
 
